@@ -34,3 +34,7 @@
 *.bin
 *.prob
 .clang-format
+.idea
+main*
+
+!main.cpp

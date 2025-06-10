@@ -1,4 +1,5 @@
 // C语言词法分析器
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -34,7 +35,7 @@ class Symbol {
 
     static const unordered_set<string> terminalSymbols;
 
-    Symbol() : type(SymbolType::NONTERMINAL), value("") {}
+    Symbol() : type(SymbolType::NONTERMINAL) {}
 
     explicit Symbol(SymbolType t) : type(t) {
         if (t == SymbolType::EPSILON) {
@@ -58,7 +59,7 @@ class Symbol {
         }
     }
 
-    ~Symbol() {}
+    ~Symbol() = default;
 
     bool isTerminal() const { return type == SymbolType::TERMINAL; }
     bool isNonTerminal() const { return type == SymbolType::NONTERMINAL; }
@@ -95,14 +96,12 @@ class Symbol {
     }
 };
 
-namespace std {
-    template<>
-    struct hash<Symbol> {
-        size_t operator()(const Symbol& s) const {
-            return s.hash();
-        }
-    };
-}
+template<>
+struct std::hash<Symbol> {
+    size_t operator()(const Symbol& s) const noexcept {
+        return s.hash();
+    }
+};
 
 const unordered_set<string> Symbol::terminalSymbols = {
     "{",
@@ -141,7 +140,7 @@ class Production {
         }
     }
 
-    Production(string rule) {
+    explicit Production(const string& rule) {
         istringstream iss(rule);
         string        leftSymbol, arrow;
         iss >> leftSymbol >> arrow;
@@ -176,7 +175,7 @@ class Production {
 };
 
 vector<Production> parseProductions(const string &line) {
-    auto barPos = line.find("|");
+    auto barPos = line.find('|');
     if (barPos == string::npos) {
         return {Production(line)};
     }
@@ -224,7 +223,7 @@ class Grammar {
 
     vector<Production> productions;
 
-    Grammar(string &grammar) {
+    explicit Grammar(const string &grammar) {
         istringstream iss(grammar);
         string        line;
         while (getline(iss, line)) {
@@ -237,7 +236,6 @@ class Grammar {
         }
 
         startSymbol = productions[0].left;
-
         for (const auto &prod : productions) {
             nonTerminals.insert(prod.left);
             for (const auto &sym : prod.right) {
@@ -255,7 +253,7 @@ class Grammar {
     }
 
     unordered_set<Symbol> computeFirstSet(const Symbol &symbol) {
-        if (symbol.isTerminal()) {
+        if (symbol.isTerminal() || symbol.isEpsilon()) {
             return {symbol};
         }
 
@@ -301,6 +299,45 @@ class Grammar {
         return result;
     }
 
+    unordered_set<Symbol> computeFirstSetForSequence(const vector<Symbol> &sequence, size_t index = 0) {
+        if (sequence.size() - index == 1){
+            return computeFirstSet(sequence.front());
+        }
+
+        if (index >= sequence.size()) {
+            throw std::runtime_error("Index out of range for sequence.");
+        }
+        
+        std::unordered_set<Symbol> result;
+        for (size_t i = index; i < sequence.size(); ++i) {
+            const Symbol& sym = sequence[i];
+            if (sym.isTerminal()) {
+                result.insert(sym);
+                break;
+            }
+            if (sym.isNonTerminal()) {
+                auto firstSet = computeFirstSet(sym);
+                bool hasEpsilon = false;
+                for (const auto& s : firstSet) {
+                    if (s.isEpsilon()) {
+                        hasEpsilon = true;
+                    } else {
+                        result.insert(s);
+                    }
+                }
+                if (!hasEpsilon) {
+                    break;
+                }
+                if (i == sequence.size() - 1) {
+                    result.insert(Symbol(SymbolType::EPSILON));
+                }
+            }
+        }
+        
+        return result;
+
+    }
+
     void computeFirstSets() {
         firstSets.clear();
         for (const auto &prod : productions) {
@@ -318,7 +355,6 @@ class Grammar {
         for (const auto &prod : productions) {
             for (auto it = prod.right.begin(); it != prod.right.end(); ++it) {
                 if (it->isNonTerminal() && it->value == symbol.value) {
-                    //TODO : Beta may be multiple symbols?
                     auto beta = it + 1;
                     if (beta == prod.right.end()) {
                         if (prod.left.value != symbol.value) {
@@ -330,6 +366,8 @@ class Grammar {
                             result.insert(*beta);
                         } else if (beta->isNonTerminal()) {
                             auto& firstSet = firstSets[*beta];
+                            // size_t index = it - prod.right.begin();
+                            // auto firstSet = computeFirstSetForSequence(prod.right, index);
                             bool hasEpsilon = false;
                             for (const auto &sym : firstSet) {
                                 if (!sym.isEpsilon()) {
@@ -398,34 +436,27 @@ class LL1Grammar : public Grammar {
   public:
     unordered_map<Symbol, unordered_map<Symbol, Production>> parseTable;
 
-    LL1Grammar(string &grammar) : Grammar(grammar) { computeParseTable(); }
+    explicit LL1Grammar(const string &grammar) : Grammar(grammar) { computeParseTable(); }
 
     void computeParseTable() {
         for (const auto &prod : productions) {
             const auto& left = prod.left;
-            for (const auto& symbol : prod.right) {
-                if (symbol.isTerminal()) {
+            auto rightFirstSet = computeFirstSetForSequence(prod.right);
+            bool rightHasEpsilon = false;
+            for (const auto& symbol : rightFirstSet) {
+                if (symbol.isEpsilon()) {
+                    rightHasEpsilon = true;
+                } else if (symbol.isTerminal()) {
                     parseTable[left][symbol] = prod;
-                    break;
-                } else if (symbol.isEpsilon()) {
-                    for (const auto& followSymbol : followSets[left]) {
+                }
+            }
+            if (rightHasEpsilon) {
+                for (const auto& followSymbol : followSets[left]) {
+                    if (followSymbol.isTerminal()) {
                         parseTable[left][followSymbol] = prod;
                     }
-                    break;
-                } else {
-                    const auto& firstSet = firstSets[symbol];
-                    bool hasEpsilon = false;
-                    for (const auto& terminal : firstSet) {
-                        if (terminal.isEpsilon()) {
-                            hasEpsilon = true;
-                        } else {
-                            parseTable[left][terminal] = prod;
-                        }
-                    }
-                    if (hasEpsilon) {
-                        for (const auto& followSymbol : followSets[left]) {
-                            parseTable[left][followSymbol] = prod;
-                        }
+                    if (followSymbol.isEndMark()) {
+                        parseTable[left][followSymbol] = prod;
                     }
                 }
             }
@@ -462,7 +493,7 @@ simpleexpr ->  ID  |  NUM  |  ( arithexpr ))";
 
 void Analysis() {
     string prog;
-    read_prog(prog);
+    // read_prog(prog);
     /* 骚年们 请开始你们的表演 */
     /********* Begin *********/
     LL1Grammar grammar(exp_gramar);
