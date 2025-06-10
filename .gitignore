@@ -33,3 +33,4 @@
 
 *.bin
 *.prob
+.clang-format

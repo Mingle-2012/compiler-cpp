@@ -1,26 +1,25 @@
 // C语言词法分析器
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <map>
+#include <sstream>
 #include <stdexcept>
 #include <string>
-#include <fstream>
-#include <sstream>
-#include <vector>
 #include <unordered_set>
+#include <vector>
 using namespace std;
 /* 不要修改这个标准输入函数 */
-void read_prog(string& prog)
-{
-	char c;
-	while(scanf("%c",&c)!=EOF){
-		prog += c;
-	}
+void read_prog(string &prog) {
+    char c;
+    while (scanf("%c", &c) != EOF) {
+        prog += c;
+    }
 }
 /* 你可以添加其他函数 */
 
-enum class SymbolType{
+enum class SymbolType {
     TERMINAL,
     NONTERMINAL,
 
@@ -29,17 +28,25 @@ enum class SymbolType{
 };
 
 class Symbol {
-public:
+  public:
     SymbolType type;
-    string value;
+    string     value;
 
     static const unordered_set<string> terminalSymbols;
 
     Symbol() : type(SymbolType::NONTERMINAL), value("") {}
 
-    explicit Symbol(SymbolType t, const string& v) : type(t), value(v) {}
+    explicit Symbol(SymbolType t) : type(t) {
+        if (t == SymbolType::EPSILON) {
+            value = "E";
+        } else if (t == SymbolType::ENDMARK) {
+            value = "$";
+        } else {
+            throw runtime_error("Cannot create Symbol without a value for TERMINAL or NONTERMINAL type");
+        }
+    }
 
-    explicit Symbol(const string& v) : value(v) {
+    explicit Symbol(const string &v) : value(v) {
         if (v == "E") {
             type = SymbolType::EPSILON;
         } else if (v == "$") {
@@ -58,36 +65,85 @@ public:
     bool isEpsilon() const { return type == SymbolType::EPSILON; }
     bool isEndMark() const { return type == SymbolType::ENDMARK; }
 
-    bool operator==(const Symbol& other) const {
+    Symbol &operator=(const Symbol &other) {
+        if (this != &other) {
+            type  = other.type;
+            value = other.value;
+        }
+        return *this;
+    }
+
+    bool operator==(const Symbol &other) const {
         return type == other.type && value == other.value;
     }
 
-    bool operator!=(const Symbol& other) const {
-        return !(*this == other);
+    bool operator!=(const Symbol &other) const { return !(*this == other); }
+
+    size_t hash() const {
+        return std::hash<string>()(value) ^ (std::hash<int>()(static_cast<int>(type)) << 1);
+    }
+
+    friend ostream &operator<<(ostream &os, const Symbol &s) {
+        if (s.isEpsilon()) {
+            os << "E";
+        } else if (s.isEndMark()) {
+            os << "$";
+        } else {
+            os << s.value;
+        }
+        return os;
     }
 };
 
-const unordered_set<string> Symbol::terminalSymbols = {
-    "{", "}", "(", ")", "if", "then", "else", "while",
-    "ID", "=", "<", ">", "<=", ">=", "==",
-    "+", "-", "*", "/", ";", "NUM"
-};
+namespace std {
+    template<>
+    struct hash<Symbol> {
+        size_t operator()(const Symbol& s) const {
+            return s.hash();
+        }
+    };
+}
 
-class Production{
-public:
-    Symbol left;
+const unordered_set<string> Symbol::terminalSymbols = {
+    "{",
+    "}",
+    "(",
+    ")",
+    "if",
+    "then",
+    "else",
+    "while",
+    "ID",
+    "=",
+    "<",
+    ">",
+    "<=",
+    ">=",
+    "==",
+    "+",
+    "-",
+    "*",
+    "/",
+    ";",
+    "NUM"};
+
+class Production {
+  public:
+    Symbol         left;
     vector<Symbol> right;
 
-    Production(const string& leftStr, const vector<string>& rightStrs) {
+    Production() = default;
+
+    Production(const string &leftStr, const vector<string> &rightStrs) {
         left = Symbol(leftStr);
-        for (const auto& str : rightStrs) {
+        for (const auto &str : rightStrs) {
             right.emplace_back(str);
         }
     }
 
-    Production(string rule){
+    Production(string rule) {
         istringstream iss(rule);
-        string leftSymbol, arrow;
+        string        leftSymbol, arrow;
         iss >> leftSymbol >> arrow;
 
         if (arrow != "->") {
@@ -102,19 +158,27 @@ public:
         }
     }
 
-    friend ostream& operator<<(ostream& os, const Production& p) {
+    Production &operator=(const Production &other) {
+        if (this != &other) {
+            left  = other.left;
+            right = other.right;
+        }
+        return *this;
+    }
+
+    friend ostream &operator<<(ostream &os, const Production &p) {
         os << p.left.value << " -> ";
-        for (const auto& sym : p.right) {
+        for (const auto &sym : p.right) {
             os << sym.value << " ";
         }
         return os;
     }
 };
 
-vector<Production> parseProductions(const string& line){
+vector<Production> parseProductions(const string &line) {
     auto barPos = line.find("|");
     if (barPos == string::npos) {
-        return { Production(line) };
+        return {Production(line)};
     }
 
     vector<Production> productions;
@@ -124,15 +188,15 @@ vector<Production> parseProductions(const string& line){
         throw runtime_error("Invalid production missing '->'");
     }
 
-    string leftStr = line.substr(0, arrowPos);
+    string leftStr  = line.substr(0, arrowPos);
     string rightStr = line.substr(arrowPos + 2);
 
-    string leftTrimmed;
+    string        leftTrimmed;
     istringstream lss(leftStr);
     lss >> leftTrimmed;
 
-    istringstream rss(rightStr);
-    string token;
+    istringstream  rss(rightStr);
+    string         token;
     vector<string> currentRight;
     while (rss >> token) {
         if (token == "|") {
@@ -150,150 +214,173 @@ vector<Production> parseProductions(const string& line){
     return productions;
 }
 
-class Grammar{
-public:
+class Grammar {
+  public:
+    Symbol startSymbol;
+    unordered_set<Symbol> terminals;
+    unordered_set<Symbol> nonTerminals;
+    unordered_map<Symbol, unordered_set<Symbol>> firstSets;
+    unordered_map<Symbol, unordered_set<Symbol>> followSets;
+
     vector<Production> productions;
 
-    Grammar(string& grammar){
+    Grammar(string &grammar) {
         istringstream iss(grammar);
-        string line;
+        string        line;
         while (getline(iss, line)) {
             auto prods = parseProductions(line);
             productions.insert(productions.end(), prods.begin(), prods.end());
         }
-    }
 
-    friend ostream& operator<<(ostream& os, const Grammar& g) {
-        for (const auto& prod : g.productions) {
-            os << prod << endl;
+        if (productions.empty()) {
+            throw runtime_error("No productions found in the grammar.");
         }
-        return os;
-    }
-};
 
-class LL1Grammar : public Grammar {
-public:
+        startSymbol = productions[0].left;
 
-    unordered_map<string, unordered_set<string>> firstSets;
-    unordered_map<string, unordered_set<string>> followSets;
-    unordered_map<string, unordered_map<string, Production>> parseTable;
+        for (const auto &prod : productions) {
+            nonTerminals.insert(prod.left);
+            for (const auto &sym : prod.right) {
+                if (sym.isNonTerminal()) {
+                    nonTerminals.insert(sym);
+                }
+                if (sym.isTerminal()) {
+                    terminals.insert(sym);
+                }
+            }
+        }
 
-
-    LL1Grammar(string& grammar) : Grammar(grammar) {
         computeFirstSets();
         computeFollowSets();
-        computeParseTable();
+    }
+
+    unordered_set<Symbol> computeFirstSet(const Symbol &symbol) {
+        if (symbol.isTerminal()) {
+            return {symbol};
+        }
+
+        if (firstSets.count(symbol) && !firstSets[symbol].empty()) {
+            return firstSets[symbol];
+        }
+
+        unordered_set<Symbol> result;
+        for (const auto &prod : productions) {
+            if (prod.left.value != symbol.value)
+                continue;
+
+            bool allHaveEpsilon = true;
+            for (const auto &rightSymbol : prod.right) {
+                if (rightSymbol.isEpsilon() || rightSymbol.isTerminal()) {
+                    result.insert(rightSymbol);
+                    allHaveEpsilon = false;
+                    break;
+                } else if (rightSymbol.isNonTerminal()) {
+                    auto subFirstSet = computeFirstSet(rightSymbol);
+                    bool hasEpsilon = false;
+                    for (const auto &sym : subFirstSet) {
+                        if (!sym.isEpsilon()) {
+                            result.insert(sym);
+                        } else {
+                            hasEpsilon = true;
+                        }
+                    }
+
+                    if (!hasEpsilon) {
+                        allHaveEpsilon = false;
+                        break;
+                    }
+                }
+            }
+
+            if (allHaveEpsilon) {
+                result.insert(Symbol(SymbolType::EPSILON));
+            }
+        }
+
+        firstSets[symbol].insert(result.begin(), result.end());
+        return result;
     }
 
     void computeFirstSets() {
-        for (const auto& prod : productions) {
-            firstSets[prod.left.value].insert(prod.right[0].value);
+        firstSets.clear();
+        for (const auto &prod : productions) {
+            computeFirstSet(prod.left);
+        }
+    }
+
+    unordered_set<Symbol> computeFollowSet(const Symbol &symbol) {
+        if (followSets.count(symbol) && !followSets[symbol].empty()) {
+            return followSets[symbol];
         }
 
-        bool changed;
-        do {
-            changed = false;
-            for (const auto& prod : productions) {
-                const auto& left = prod.left.value;
-                for (const auto& symbol : prod.right) {
-                    if (symbol.isTerminal()) {
-                        if (firstSets[left].insert(symbol.value).second) {
-                            changed = true;
+        unordered_set<Symbol>& result = followSets[symbol];
+
+        for (const auto &prod : productions) {
+            for (auto it = prod.right.begin(); it != prod.right.end(); ++it) {
+                if (it->isNonTerminal() && it->value == symbol.value) {
+                    //TODO : Beta may be multiple symbols?
+                    auto beta = it + 1;
+                    if (beta == prod.right.end()) {
+                        if (prod.left.value != symbol.value) {
+                            auto leftFollowSet = computeFollowSet(prod.left);
+                            result.insert(leftFollowSet.begin(), leftFollowSet.end());
                         }
-                        break;
-                    } else if (symbol.isEpsilon()) {
-                        break;
                     } else {
-                        const auto& firstSet = firstSets[symbol.value];
-                        size_t oldSize = firstSets[left].size();
-                        firstSets[left].insert(firstSet.begin(), firstSet.end());
-                        if (firstSets[left].size() > oldSize) {
-                            changed = true;
+                        if (beta->isTerminal()) {
+                            result.insert(*beta);
+                        } else if (beta->isNonTerminal()) {
+                            auto& firstSet = firstSets[*beta];
+                            bool hasEpsilon = false;
+                            for (const auto &sym : firstSet) {
+                                if (!sym.isEpsilon()) {
+                                    result.insert(sym);
+                                } else {
+                                    hasEpsilon = true;
+                                }
+                            }
+
+                            if (hasEpsilon && prod.left.value != symbol.value) {
+                                auto leftFollowSet = computeFollowSet(prod.left);
+                                result.insert(leftFollowSet.begin(), leftFollowSet.end());
+                            }
                         }
                     }
                 }
             }
-        } while (changed);
+        }
+
+        followSets[symbol] = result;
+        return result;
     }
 
     void computeFollowSets() {
-        followSets[productions[0].left.value].insert("$");
+        if (!productions.empty()) {
+            followSets[startSymbol].insert(Symbol(SymbolType::ENDMARK));
+        }
 
-        bool changed;
-        do {
-            changed = false;
-            for (const auto& prod : productions) {
-                const auto& left = prod.left.value;
-                for (size_t i = 0; i < prod.right.size(); ++i) {
-                    const auto& symbol = prod.right[i];
-                    if (symbol.isNonTerminal()) {
-                        if (i + 1 < prod.right.size()) {
-                            const auto& nextSymbol = prod.right[i + 1];
-                            if (nextSymbol.isTerminal()) {
-                                if (followSets[symbol.value].insert(nextSymbol.value).second) {
-                                    changed = true;
-                                }
-                            } else {
-                                const auto& firstSet = firstSets[nextSymbol.value];
-                                size_t oldSize = followSets[symbol.value].size();
-                                followSets[symbol.value].insert(firstSet.begin(), firstSet.end());
-                                if (followSets[symbol.value].size() > oldSize) {
-                                    changed = true;
-                                }
-                                if (firstSet.count("E")) {
-                                    if (followSets[symbol.value].insert(followSets[left].begin(), followSets[left].end()).second) {
-                                        changed = true;
-                                    }
-                                }
-                            }
-                        } else {
-                            size_t oldSize = followSets[symbol.value].size();
-                            followSets[symbol.value].insert(followSets[left].begin(), followSets[left].end());
-                            if (followSets[symbol.value].size() > oldSize) {
-                                changed = true;
-                            }
-                        }
-                    }
-                }
-            }
-        } while (changed);
-    }
-
-    void computeParseTable() {
-        for (const auto& prod : productions) {
-            const auto& left = prod.left.value;
-            for (const auto& symbol : prod.right) {
-                if (symbol.isTerminal()) {
-                    parseTable[left][symbol.value] = prod;
-                    break;
-                } else if (symbol.isEpsilon()) {
-                    for (const auto& followSymbol : followSets[left]) {
-                        parseTable[left][followSymbol] = prod;
-                    }
-                    break;
-                } else {
-                    const auto& firstSet = firstSets[symbol.value];
-                    for (const auto& terminal : firstSet) {
-                        parseTable[left][terminal] = prod;
-                    }
-                    if (firstSet.count("E")) {
-                        for (const auto& followSymbol : followSets[left]) {
-                            parseTable[left][followSymbol] = prod;
-                        }
-                    }
-                }
-            }
+        for (const auto &nt : nonTerminals) {
+            computeFollowSet(nt);
         }
     }
-    friend ostream& operator<<(ostream& os, const LL1Grammar& g) {
+
+    friend ostream &operator<<(ostream &os, const Grammar &g) {
+        os << "Productions:" << endl;
+        for (const auto &prod : g.productions) {
+            os << prod << endl;
+        }
+
+        os << "------------------------" << endl;
+
         os << "First Sets:" << endl;
-        for (const auto& pair : g.firstSets) {
+        for (const auto &pair : g.firstSets) {
             os << pair.first << ": ";
-            for (const auto& symbol : pair.second) {
+            for (const auto &symbol : pair.second) {
                 os << symbol << " ";
             }
             os << endl;
         }
+
+        os << "------------------------" << endl;
 
         os << "Follow Sets:" << endl;
         for (const auto& pair : g.followSets) {
@@ -303,18 +390,59 @@ public:
             }
             os << endl;
         }
+        return os;
+    }
+};
 
+class LL1Grammar : public Grammar {
+  public:
+    unordered_map<Symbol, unordered_map<Symbol, Production>> parseTable;
+
+    LL1Grammar(string &grammar) : Grammar(grammar) { computeParseTable(); }
+
+    void computeParseTable() {
+        for (const auto &prod : productions) {
+            const auto& left = prod.left;
+            for (const auto& symbol : prod.right) {
+                if (symbol.isTerminal()) {
+                    parseTable[left][symbol] = prod;
+                    break;
+                } else if (symbol.isEpsilon()) {
+                    for (const auto& followSymbol : followSets[left]) {
+                        parseTable[left][followSymbol] = prod;
+                    }
+                    break;
+                } else {
+                    const auto& firstSet = firstSets[symbol];
+                    bool hasEpsilon = false;
+                    for (const auto& terminal : firstSet) {
+                        if (terminal.isEpsilon()) {
+                            hasEpsilon = true;
+                        } else {
+                            parseTable[left][terminal] = prod;
+                        }
+                    }
+                    if (hasEpsilon) {
+                        for (const auto& followSymbol : followSets[left]) {
+                            parseTable[left][followSymbol] = prod;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    friend ostream &operator<<(ostream &os, const LL1Grammar &g) {
         os << "Parse Table:" << endl;
-        for (const auto& pair : g.parseTable) {
-            os << pair.first << ": ";
-            for (const auto& innerPair : pair.second) {
-                os << innerPair.first << " -> " << innerPair.second.left.value << endl;
+        for (const auto &pair : g.parseTable) {
+            os << pair.first << ": " << endl;
+            for (const auto &prod : pair.second) {
+                os << pair.first << " -> " << prod.first << endl;
             }
         }
 
         return os;
     }
-
 };
 
 string exp_gramar = R"(program -> compoundstmt
@@ -332,22 +460,18 @@ multexpr ->  simpleexpr  multexprprime
 multexprprime ->  * simpleexpr multexprprime  |  / simpleexpr multexprprime  |   E
 simpleexpr ->  ID  |  NUM  |  ( arithexpr ))";
 
-void Analysis()
-{
-	string prog;
-	read_prog(prog);
-	/* 骚年们 请开始你们的表演 */
+void Analysis() {
+    string prog;
+    read_prog(prog);
+    /* 骚年们 请开始你们的表演 */
     /********* Begin *********/
-    Grammar grammar(exp_gramar);
-    
-    
+    LL1Grammar grammar(exp_gramar);
+    cout << grammar;
 
     /********* End *********/
-	
 }
 
-int main()
-{
+int main() {
     Analysis();
     return 0;
 }
