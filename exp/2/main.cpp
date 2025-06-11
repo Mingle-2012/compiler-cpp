@@ -213,6 +213,17 @@ vector<Production> parseProductions(const string &line) {
     return productions;
 }
 
+struct ParseTreeNode {
+    Symbol symbol;
+    vector<shared_ptr<ParseTreeNode>> children;
+    
+    ParseTreeNode(const Symbol& sym) : symbol(sym) {}
+    
+    void addChild(shared_ptr<ParseTreeNode> child) {
+        children.push_back(child);
+    }
+};
+
 class Grammar {
   public:
     Symbol startSymbol;
