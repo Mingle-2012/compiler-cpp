@@ -1,15 +1,18 @@
 // C语言词法分析器
 #include <cstddef>
 #include <cstdio>
-#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <sstream>
+#include <stack>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
 using namespace std;
 /* 不要修改这个标准输入函数 */
 void read_prog(string &prog) {
@@ -31,7 +34,7 @@ enum class SymbolType {
 class Symbol {
   public:
     SymbolType type;
-    string     value;
+    string value;
 
     static const unordered_set<string> terminalSymbols;
 
@@ -43,7 +46,9 @@ class Symbol {
         } else if (t == SymbolType::ENDMARK) {
             value = "$";
         } else {
-            throw runtime_error("Cannot create Symbol without a value for TERMINAL or NONTERMINAL type");
+            throw runtime_error(
+                "Cannot create Symbol without a value for TERMINAL "
+                "or NONTERMINAL type");
         }
     }
 
@@ -61,14 +66,18 @@ class Symbol {
 
     ~Symbol() = default;
 
-    bool isTerminal() const { return type == SymbolType::TERMINAL; }
-    bool isNonTerminal() const { return type == SymbolType::NONTERMINAL; }
-    bool isEpsilon() const { return type == SymbolType::EPSILON; }
-    bool isEndMark() const { return type == SymbolType::ENDMARK; }
+    [[nodiscard]] bool isTerminal() const {
+        return type == SymbolType::TERMINAL;
+    }
+    [[nodiscard]] bool isNonTerminal() const {
+        return type == SymbolType::NONTERMINAL;
+    }
+    [[nodiscard]] bool isEpsilon() const { return type == SymbolType::EPSILON; }
+    [[nodiscard]] bool isEndMark() const { return type == SymbolType::ENDMARK; }
 
     Symbol &operator=(const Symbol &other) {
         if (this != &other) {
-            type  = other.type;
+            type = other.type;
             value = other.value;
         }
         return *this;
@@ -80,8 +89,9 @@ class Symbol {
 
     bool operator!=(const Symbol &other) const { return !(*this == other); }
 
-    size_t hash() const {
-        return std::hash<string>()(value) ^ (std::hash<int>()(static_cast<int>(type)) << 1);
+    [[nodiscard]] size_t hash() const {
+        return std::hash<string>()(value) ^
+               (std::hash<int>()(static_cast<int>(type)) << 1);
     }
 
     friend ostream &operator<<(ostream &os, const Symbol &s) {
@@ -96,39 +106,17 @@ class Symbol {
     }
 };
 
-template<>
-struct std::hash<Symbol> {
-    size_t operator()(const Symbol& s) const noexcept {
-        return s.hash();
-    }
+template <> struct std::hash<Symbol> {
+    size_t operator()(const Symbol &s) const noexcept { return s.hash(); }
 };
 
 const unordered_set<string> Symbol::terminalSymbols = {
-    "{",
-    "}",
-    "(",
-    ")",
-    "if",
-    "then",
-    "else",
-    "while",
-    "ID",
-    "=",
-    "<",
-    ">",
-    "<=",
-    ">=",
-    "==",
-    "+",
-    "-",
-    "*",
-    "/",
-    ";",
-    "NUM"};
+    "{", "}",  "(",  ")",  "if", "then", "else", "while", "ID", "=",  "<",
+    ">", "<=", ">=", "==", "+",  "-",    "*",    "/",     ";",  "NUM"};
 
 class Production {
   public:
-    Symbol         left;
+    Symbol left;
     vector<Symbol> right;
 
     Production() = default;
@@ -140,9 +128,9 @@ class Production {
         }
     }
 
-    explicit Production(const string& rule) {
+    explicit Production(const string &rule) {
         istringstream iss(rule);
-        string        leftSymbol, arrow;
+        string leftSymbol, arrow;
         iss >> leftSymbol >> arrow;
 
         if (arrow != "->") {
@@ -159,7 +147,7 @@ class Production {
 
     Production &operator=(const Production &other) {
         if (this != &other) {
-            left  = other.left;
+            left = other.left;
             right = other.right;
         }
         return *this;
@@ -187,15 +175,15 @@ vector<Production> parseProductions(const string &line) {
         throw runtime_error("Invalid production missing '->'");
     }
 
-    string leftStr  = line.substr(0, arrowPos);
+    string leftStr = line.substr(0, arrowPos);
     string rightStr = line.substr(arrowPos + 2);
 
-    string        leftTrimmed;
+    string leftTrimmed;
     istringstream lss(leftStr);
     lss >> leftTrimmed;
 
-    istringstream  rss(rightStr);
-    string         token;
+    istringstream rss(rightStr);
+    string token;
     vector<string> currentRight;
     while (rss >> token) {
         if (token == "|") {
@@ -213,16 +201,53 @@ vector<Production> parseProductions(const string &line) {
     return productions;
 }
 
+vector<pair<Symbol, int>> tokenize(const string &input) {
+    vector<pair<Symbol, int>> tokens;
+    istringstream iss(input);
+    string line;
+    int lineNumber = 1;
+
+    while (getline(iss, line)) {
+        istringstream lineStream(line);
+        string token;
+        bool hasTokensInLine = false;
+
+        while (lineStream >> token) {
+            tokens.emplace_back(Symbol(token), lineNumber);
+            hasTokensInLine = true;
+        }
+
+        if (hasTokensInLine || !line.empty()) {
+            lineNumber++;
+        }
+    }
+
+    tokens.emplace_back(Symbol(SymbolType::ENDMARK), lineNumber - 1);
+    return tokens;
+}
+
 struct ParseTreeNode {
     Symbol symbol;
     vector<shared_ptr<ParseTreeNode>> children;
-    
-    ParseTreeNode(const Symbol& sym) : symbol(sym) {}
-    
-    void addChild(shared_ptr<ParseTreeNode> child) {
+
+    explicit ParseTreeNode(const Symbol &sym) : symbol(sym) {}
+
+    void addChild(shared_ptr<ParseTreeNode> &child) {
         children.push_back(child);
     }
 };
+
+void printParseTree(const shared_ptr<ParseTreeNode> &node, int depth = 0) {
+    if (!node)
+        return;
+    for (int i = 0; i < depth; ++i) {
+        cout << "\t";
+    }
+    cout << node->symbol.value << endl;
+    for (const auto &child : node->children) {
+        printParseTree(child, depth + 1);
+    }
+}
 
 class Grammar {
   public:
@@ -236,7 +261,7 @@ class Grammar {
 
     explicit Grammar(const string &grammar) {
         istringstream iss(grammar);
-        string        line;
+        string line;
         while (getline(iss, line)) {
             auto prods = parseProductions(line);
             productions.insert(productions.end(), prods.begin(), prods.end());
@@ -310,18 +335,20 @@ class Grammar {
         return result;
     }
 
-    unordered_set<Symbol> computeFirstSetForSequence(const vector<Symbol> &sequence, size_t index = 0) {
-        if (sequence.size() - index == 1){
+    unordered_set<Symbol>
+    computeFirstSetForSequence(const vector<Symbol> &sequence,
+                               size_t index = 0) {
+        if (sequence.size() - index == 1) {
             return computeFirstSet(sequence.front());
         }
 
         if (index >= sequence.size()) {
             throw std::runtime_error("Index out of range for sequence.");
         }
-        
+
         std::unordered_set<Symbol> result;
         for (size_t i = index; i < sequence.size(); ++i) {
-            const Symbol& sym = sequence[i];
+            const Symbol &sym = sequence[i];
             if (sym.isTerminal()) {
                 result.insert(sym);
                 break;
@@ -329,7 +356,7 @@ class Grammar {
             if (sym.isNonTerminal()) {
                 auto firstSet = computeFirstSet(sym);
                 bool hasEpsilon = false;
-                for (const auto& s : firstSet) {
+                for (const auto &s : firstSet) {
                     if (s.isEpsilon()) {
                         hasEpsilon = true;
                     } else {
@@ -344,9 +371,8 @@ class Grammar {
                 }
             }
         }
-        
-        return result;
 
+        return result;
     }
 
     void computeFirstSets() {
@@ -356,12 +382,13 @@ class Grammar {
         }
     }
 
-    unordered_set<Symbol> computeFollowSet(const Symbol &symbol) {
-        if (followSets.count(symbol) && !followSets[symbol].empty()) {
+    unordered_set<Symbol> computeFollowSet(const Symbol &symbol,
+                                           unordered_set<Symbol> &visited) {
+        if (visited.count(symbol))
             return followSets[symbol];
-        }
+        visited.insert(symbol);
 
-        unordered_set<Symbol>& result = followSets[symbol];
+        unordered_set<Symbol> &result = followSets[symbol];
 
         for (const auto &prod : productions) {
             for (auto it = prod.right.begin(); it != prod.right.end(); ++it) {
@@ -369,28 +396,37 @@ class Grammar {
                     auto beta = it + 1;
                     if (beta == prod.right.end()) {
                         if (prod.left.value != symbol.value) {
-                            auto leftFollowSet = computeFollowSet(prod.left);
-                            result.insert(leftFollowSet.begin(), leftFollowSet.end());
+                            auto leftFollowSet =
+                                computeFollowSet(prod.left, visited);
+                            result.insert(leftFollowSet.begin(),
+                                          leftFollowSet.end());
                         }
                     } else {
                         if (beta->isTerminal()) {
                             result.insert(*beta);
                         } else if (beta->isNonTerminal()) {
-                            auto& firstSet = firstSets[*beta];
-                            // size_t index = it - prod.right.begin();
-                            // auto firstSet = computeFirstSetForSequence(prod.right, index);
                             bool hasEpsilon = false;
-                            for (const auto &sym : firstSet) {
-                                if (!sym.isEpsilon()) {
-                                    result.insert(sym);
-                                } else {
-                                    hasEpsilon = true;
+                            auto current = beta;
+                            while (current != prod.right.end()) {
+                                auto &firstSet = firstSets[*current];
+                                for (const auto &sym : firstSet) {
+                                    if (!sym.isEpsilon()) {
+                                        result.insert(sym);
+                                    } else {
+                                        hasEpsilon = true;
+                                    }
                                 }
+                                if (!hasEpsilon) {
+                                    break;
+                                }
+                                current++;
                             }
 
                             if (hasEpsilon && prod.left.value != symbol.value) {
-                                auto leftFollowSet = computeFollowSet(prod.left);
-                                result.insert(leftFollowSet.begin(), leftFollowSet.end());
+                                auto leftFollowSet =
+                                    computeFollowSet(prod.left, visited);
+                                result.insert(leftFollowSet.begin(),
+                                              leftFollowSet.end());
                             }
                         }
                     }
@@ -408,7 +444,8 @@ class Grammar {
         }
 
         for (const auto &nt : nonTerminals) {
-            computeFollowSet(nt);
+            unordered_set<Symbol> visited;
+            computeFollowSet(nt, visited);
         }
     }
 
@@ -432,9 +469,9 @@ class Grammar {
         os << "------------------------" << endl;
 
         os << "Follow Sets:" << endl;
-        for (const auto& pair : g.followSets) {
+        for (const auto &pair : g.followSets) {
             os << pair.first << ": ";
-            for (const auto& symbol : pair.second) {
+            for (const auto &symbol : pair.second) {
                 os << symbol << " ";
             }
             os << endl;
@@ -447,14 +484,16 @@ class LL1Grammar : public Grammar {
   public:
     unordered_map<Symbol, unordered_map<Symbol, Production>> parseTable;
 
-    explicit LL1Grammar(const string &grammar) : Grammar(grammar) { computeParseTable(); }
+    explicit LL1Grammar(const string &grammar) : Grammar(grammar) {
+        computeParseTable();
+    }
 
     void computeParseTable() {
         for (const auto &prod : productions) {
-            const auto& left = prod.left;
+            const auto &left = prod.left;
             auto rightFirstSet = computeFirstSetForSequence(prod.right);
             bool rightHasEpsilon = false;
-            for (const auto& symbol : rightFirstSet) {
+            for (const auto &symbol : rightFirstSet) {
                 if (symbol.isEpsilon()) {
                     rightHasEpsilon = true;
                 } else if (symbol.isTerminal()) {
@@ -462,7 +501,7 @@ class LL1Grammar : public Grammar {
                 }
             }
             if (rightHasEpsilon) {
-                for (const auto& followSymbol : followSets[left]) {
+                for (const auto &followSymbol : followSets[left]) {
                     if (followSymbol.isTerminal()) {
                         parseTable[left][followSymbol] = prod;
                     }
@@ -474,12 +513,149 @@ class LL1Grammar : public Grammar {
         }
     }
 
+    bool tryRecoverMissingSemicolon(const Symbol &nonTerminal,
+                                    const Symbol &currentInput,
+                                    stack<Symbol> &parseStack,
+                                    stack<shared_ptr<ParseTreeNode>> &nodeStack,
+                                    shared_ptr<ParseTreeNode> &currentNode) {
+        Symbol semicolon(";");
+        if (parseTable.count(nonTerminal) &&
+            parseTable.at(nonTerminal).count(semicolon)) {
+            const Production &prod = parseTable.at(nonTerminal).at(semicolon);
+            auto semicolonNode = make_shared<ParseTreeNode>(semicolon);
+            semicolonNode->symbol = currentInput;
+            currentNode->addChild(semicolonNode);
+
+            vector<shared_ptr<ParseTreeNode>> children;
+            for (const auto &sym : prod.right) {
+                if (!sym.isEpsilon() && sym.value != ";") {
+                    auto child = make_shared<ParseTreeNode>(sym);
+                    children.push_back(child);
+                    currentNode->addChild(child);
+                }
+            }
+
+            while (!parseStack.empty() &&
+                   parseStack.top().value != semicolon.value) {
+                parseStack.pop();
+                nodeStack.pop();
+            }
+            parseStack.pop();
+            nodeStack.pop();
+
+            for (auto it = prod.right.rbegin(); it != prod.right.rend(); ++it) {
+                if (!it->isEpsilon() && it->value != ";") {
+                    parseStack.push(*it);
+                    for (auto &child : children) {
+                        if (child->symbol.value == it->value) {
+                            nodeStack.push(child);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            return true;
+        }
+        return false;
+    }
+
+    shared_ptr<ParseTreeNode> parse(const string &input) {
+        auto tokens = tokenize(input);
+        auto currentToken = 0;
+
+        stack<Symbol> parseStack;
+        stack<shared_ptr<ParseTreeNode>> nodeStack;
+
+        parseStack.emplace(SymbolType::ENDMARK);
+        parseStack.push(startSymbol);
+
+        auto root = make_shared<ParseTreeNode>(startSymbol);
+        nodeStack.push(nullptr);
+        nodeStack.push(root);
+
+        while (!parseStack.empty() && currentToken < tokens.size()) {
+            Symbol top = parseStack.top();
+            const Symbol &currentInput = tokens[currentToken].first;
+            auto currentNode = nodeStack.top();
+
+            parseStack.pop();
+            nodeStack.pop();
+
+            if (top.isTerminal() || top.isEndMark()) {
+                if (top.value == currentInput.value) {
+                    currentToken++;
+                } else {
+                    cout << "语法错误,第" << tokens[currentToken].second - 1
+                         << "行,缺少\"" << top.value << "\"" << endl;
+                    continue;
+                }
+            } else if (top.isNonTerminal()) {
+                if (parseTable.count(top) &&
+                    parseTable.at(top).count(currentInput)) {
+
+                    const Production &prod =
+                        parseTable.at(top).at(currentInput);
+
+                    vector<shared_ptr<ParseTreeNode>> children;
+                    for (const auto &sym : prod.right) {
+                        if (!sym.isEpsilon()) {
+                            auto child = make_shared<ParseTreeNode>(sym);
+                            children.push_back(child);
+                            currentNode->addChild(child);
+                        }
+                    }
+
+                    for (auto it = prod.right.rbegin(); it != prod.right.rend();
+                         ++it) {
+                        if (!it->isEpsilon()) {
+                            parseStack.push(*it);
+                            nodeStack.push(
+                                children[prod.right.rend() - it - 1]);
+                        }
+                    }
+
+                    if (prod.right.size() == 1 && prod.right[0].isEpsilon()) {
+                        auto epsilonChild =
+                            make_shared<ParseTreeNode>(prod.right[0]);
+                        currentNode->addChild(epsilonChild);
+                    }
+
+                } else {
+                    const auto &table = parseTable.at(top);
+                    if (!table.count(currentInput)) {
+                        if (firstSets.at(top).count(
+                                Symbol(SymbolType::EPSILON))) {
+                            auto epsilonNode = make_shared<ParseTreeNode>(
+                                Symbol(SymbolType::EPSILON));
+                            currentNode->addChild(epsilonNode);
+                        } else if (!followSets.at(top).count(currentInput)) {
+                            ++currentToken;
+                        } else {
+                            throw runtime_error(
+                                "语法错误,第" +
+                                to_string(tokens[currentToken].second) +
+                                "行,无法从" + top.value + "推导出" +
+                                currentInput.value);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (parseStack.empty() && currentToken == tokens.size()) {
+            return root;
+        } else {
+            return nullptr;
+        }
+    }
+
     friend ostream &operator<<(ostream &os, const LL1Grammar &g) {
         os << "Parse Table:" << endl;
         for (const auto &pair : g.parseTable) {
             os << pair.first << ": " << endl;
-            for (const auto &prod : pair.second) {
-                os << pair.first << " -> " << prod.first << endl;
+            for (const auto &_pair : pair.second) {
+                os << " " << _pair.first << " " << _pair.second << endl;
             }
         }
 
@@ -487,7 +663,7 @@ class LL1Grammar : public Grammar {
     }
 };
 
-string exp_gramar = R"(program -> compoundstmt
+string exp_grammar = R"(program -> compoundstmt
 stmt ->  ifstmt  |  whilestmt  |  assgstmt  |  compoundstmt
 compoundstmt ->  { stmts }
 stmts ->  stmt stmts   |   E
@@ -504,11 +680,18 @@ simpleexpr ->  ID  |  NUM  |  ( arithexpr ))";
 
 void Analysis() {
     string prog;
-    // read_prog(prog);
+    read_prog(prog);
     /* 骚年们 请开始你们的表演 */
     /********* Begin *********/
-    LL1Grammar grammar(exp_gramar);
-    cout << grammar;
+    //     LL1Grammar grammar(test_grammar);
+    //     cout << grammar << endl;
+    LL1Grammar grammar(exp_grammar);
+    auto tree = grammar.parse(prog);
+    if (tree) {
+        printParseTree(tree);
+    } else {
+        cout << "Parsing failed." << endl;
+    }
 
     /********* End *********/
 }
