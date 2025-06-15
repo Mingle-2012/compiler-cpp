@@ -1,4 +1,5 @@
 // C语言词法分析器
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <fstream>
@@ -116,6 +117,8 @@ const unordered_set<string> Symbol::terminalSymbols = {
 
 class Production {
   public:
+    // FIXME Support ID for productions
+    int id;
     Symbol left;
     vector<Symbol> right;
 
@@ -159,6 +162,21 @@ class Production {
             os << sym.value << " ";
         }
         return os;
+    }
+
+    [[nodiscard]] string toString() const {
+        ostringstream oss;
+        oss << left.value << " -> ";
+        for (const auto &sym : right) {
+            oss << sym.value << " ";
+        }
+        return oss.str();
+    }
+};
+
+template <> struct std::hash<Production> {
+    size_t operator()(const Production &prod) const {
+        return hash<string>()(prod.toString());
     }
 };
 
@@ -263,6 +281,8 @@ class Grammar {
         istringstream iss(grammar);
         string line;
         while (getline(iss, line)) {
+            if (line.empty())
+                continue;
             auto prods = parseProductions(line);
             productions.insert(productions.end(), prods.begin(), prods.end());
         }
@@ -289,6 +309,7 @@ class Grammar {
     }
 
     unordered_set<Symbol> computeFirstSet(const Symbol &symbol) {
+        // FIXME Cannot handle left recursion
         if (symbol.isTerminal() || symbol.isEpsilon()) {
             return {symbol};
         }
@@ -480,155 +501,313 @@ class Grammar {
     }
 };
 
-class LL1Grammar : public Grammar {
+enum ActionType { SHIFT, REDUCE, ACCEPT, ERROR };
+
+class Action {
   public:
-    unordered_map<Symbol, unordered_map<Symbol, Production>> parseTable;
+    ActionType type;
+    union {
+        int state;
+        int productionId;
+    };
 
-    explicit LL1Grammar(const string &grammar) : Grammar(grammar) {
-        computeParseTable();
-    }
+    Action() : type(ERROR), state(-1) {}
 
-    void computeParseTable() {
-        for (const auto &prod : productions) {
-            const auto &left = prod.left;
-            auto rightFirstSet = computeFirstSetForSequence(prod.right);
-            bool rightHasEpsilon = false;
-            for (const auto &symbol : rightFirstSet) {
-                if (symbol.isEpsilon()) {
-                    rightHasEpsilon = true;
-                } else if (symbol.isTerminal()) {
-                    parseTable[left][symbol] = prod;
-                }
-            }
-            if (rightHasEpsilon) {
-                for (const auto &followSymbol : followSets[left]) {
-                    if (followSymbol.isTerminal()) {
-                        parseTable[left][followSymbol] = prod;
-                    }
-                    if (followSymbol.isEndMark()) {
-                        parseTable[left][followSymbol] = prod;
-                    }
-                }
-            }
-        }
-    }
-
-    shared_ptr<ParseTreeNode> parse(const string &input) {
-        auto tokens = tokenize(input);
-        auto currentToken = 0;
-
-        stack<Symbol> parseStack;
-        stack<shared_ptr<ParseTreeNode>> nodeStack;
-
-        parseStack.emplace(SymbolType::ENDMARK);
-        parseStack.push(startSymbol);
-
-        auto root = make_shared<ParseTreeNode>(startSymbol);
-        nodeStack.push(nullptr);
-        nodeStack.push(root);
-
-        while (!parseStack.empty() && currentToken < tokens.size()) {
-            Symbol top = parseStack.top();
-            const Symbol &currentInput = tokens[currentToken].first;
-            auto currentNode = nodeStack.top();
-
-            parseStack.pop();
-            nodeStack.pop();
-
-            if (top.isTerminal() || top.isEndMark()) {
-                if (top.value == currentInput.value) {
-                    currentToken++;
-                } else {
-                    cout << "语法错误,第" << tokens[currentToken].second - 1
-                         << "行,缺少\"" << top.value << "\"" << endl;
-                    continue;
-                }
-            } else if (top.isNonTerminal()) {
-                if (parseTable.count(top) &&
-                    parseTable.at(top).count(currentInput)) {
-
-                    const Production &prod =
-                        parseTable.at(top).at(currentInput);
-
-                    vector<shared_ptr<ParseTreeNode>> children;
-                    for (const auto &sym : prod.right) {
-                        if (!sym.isEpsilon()) {
-                            auto child = make_shared<ParseTreeNode>(sym);
-                            children.push_back(child);
-                            currentNode->addChild(child);
-                        }
-                    }
-
-                    for (auto it = prod.right.rbegin(); it != prod.right.rend();
-                         ++it) {
-                        if (!it->isEpsilon()) {
-                            parseStack.push(*it);
-                            nodeStack.push(
-                                children[prod.right.rend() - it - 1]);
-                        }
-                    }
-
-                    if (prod.right.size() == 1 && prod.right[0].isEpsilon()) {
-                        auto epsilonChild =
-                            make_shared<ParseTreeNode>(prod.right[0]);
-                        currentNode->addChild(epsilonChild);
-                    }
-
-                } else {
-                    const auto &table = parseTable.at(top);
-                    if (!table.count(currentInput)) {
-                        if (firstSets.at(top).count(
-                                Symbol(SymbolType::EPSILON))) {
-                            auto epsilonNode = make_shared<ParseTreeNode>(
-                                Symbol(SymbolType::EPSILON));
-                            currentNode->addChild(epsilonNode);
-                        } else if (!followSets.at(top).count(currentInput)) {
-                            ++currentToken;
-                        } else {
-                            throw runtime_error(
-                                "语法错误,第" +
-                                to_string(tokens[currentToken].second) +
-                                "行,无法从" + top.value + "推导出" +
-                                currentInput.value);
-                        }
-                    }
-                }
-            }
-        }
-
-        if (parseStack.empty() && currentToken == tokens.size()) {
-            return root;
+    explicit Action(ActionType t, int num = -1){
+        if (t == SHIFT || t == ACCEPT) {
+            type = t;
+            state = num;
+        } else if (t == REDUCE) {
+            type = t;
+            productionId = num;
         } else {
-            return nullptr;
+            type = ERROR;
+            state = -1;
         }
     }
 
-    friend ostream &operator<<(ostream &os, const LL1Grammar &g) {
-        os << "Parse Table:" << endl;
-        for (const auto &pair : g.parseTable) {
-            os << pair.first << ": " << endl;
-            for (const auto &_pair : pair.second) {
-                os << " " << _pair.first << " " << _pair.second << endl;
+    [[nodiscard]] bool isShift() const { return type == SHIFT; }
+    [[nodiscard]] bool isReduce() const { return type == REDUCE; }
+    [[nodiscard]] bool isAccept() const { return type == ACCEPT; }
+    [[nodiscard]] bool isError() const { return type == ERROR; }
+
+    Action &operator=(const Action &other) {
+        if (this != &other) {
+            type = other.type;
+            state = other.state;
+        }
+        return *this;
+    }
+};
+
+class Item {
+  public:
+    Production production;
+    int dotPos;
+
+    Item(const Production &prod, int pos) : production(prod), dotPos(pos) {}
+
+    Item &operator=(const Item &other) {
+        if (this != &other) {
+            production = other.production;
+            dotPos = other.dotPos;
+        }
+        return *this;
+    }
+
+    bool operator==(const Item &other) const {
+        return production.left == other.production.left &&
+               production.right == other.production.right &&
+               dotPos == other.dotPos;
+    }
+
+    bool operator!=(const Item &other) const { return !(*this == other); }
+
+    [[nodiscard]] bool isComplete() const {
+        return dotPos >= static_cast<int>(production.right.size());
+    }
+
+    [[nodiscard]] Symbol nextSymbol() const {
+        if (dotPos < static_cast<int>(production.right.size())) {
+            return production.right[dotPos];
+        }
+        return Symbol(SymbolType::EPSILON);
+    }
+
+    [[nodiscard]] Item advance() const {
+        if (isComplete()) {
+            throw runtime_error("Cannot advance a complete item.");
+        }
+        return {production, dotPos + 1};
+    }
+};
+
+template <> struct std::hash<Item> {
+    size_t operator()(const Item &item) const {
+        return hash<Production>()(item.production) ^ hash<int>()(item.dotPos);
+    }
+};
+
+template <>
+    struct std::hash<std::pair<int, Symbol>> {
+        size_t operator()(const std::pair<int, Symbol>& p) const noexcept {
+            return hash<int>()(p.first) ^ (hash<Symbol>()(p.second) << 1);
+        }
+    };
+class ItemSet {
+  public:
+    unordered_set<Item> items;
+    int state;
+
+    explicit ItemSet(int id = -1) : state(id) {}
+
+    bool operator==(const ItemSet &other) const { return items == other.items; }
+
+    void add(const Item &item) { items.insert(item); }
+
+    ItemSet &operator=(const ItemSet &other) {
+        if (this != &other) {
+            items = other.items;
+            state = other.state;
+        }
+        return *this;
+    }
+};
+
+class SLRGrammar : public Grammar {
+
+    vector<ItemSet> itemSets;
+    unordered_map<int, unordered_map<Symbol, int>> transitions;
+
+    ItemSet closure(const ItemSet &itemSet) {
+        ItemSet closureSet = itemSet;
+        bool changed;
+        do {
+            changed = false;
+            for (const auto &item : closureSet.items) {
+                if (item.isComplete())
+                    continue;
+
+                Symbol nextSym = item.nextSymbol();
+                if (!nextSym.isNonTerminal())
+                    continue;
+
+                for (const auto &prod : productions) {
+                    if (prod.left == nextSym) {
+                        Item newItem(prod, 0);
+                        if (closureSet.items.insert(newItem).second) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        } while (changed);
+        return closureSet;
+    }
+
+    ItemSet gotoSet(const ItemSet &itemSet, const Symbol &symbol) {
+        ItemSet gotoSet;
+        for (const auto &item : itemSet.items) {
+            if (item.isComplete())
+                continue;
+
+            if (item.nextSymbol() == symbol) {
+                gotoSet.add(item.advance());
             }
         }
+        return closure(gotoSet);
+    }
+
+    void buildItemSets() {
+        ItemSet initialSet(0);
+        for (const auto &prod : productions) {
+            if (prod.left == startSymbol) {
+                initialSet.add(Item(prod, 0));
+            }
+        }
+        initialSet = closure(initialSet);
+        initialSet.add(Item(Production(startSymbol.value + "'", {startSymbol.value}), 0));
+        itemSets.push_back(initialSet);
+
+        unordered_set<pair<int, Symbol>> processedTransitions;
+        bool changed;
+        do {
+            changed = false;
+            for (int i = 0; i < itemSets.size(); ++i) {
+
+                unordered_set<Symbol> symbols;
+                for (const auto &item : itemSets[i].items) {
+                    if (!item.isComplete()) {
+                        Symbol nextSym = item.nextSymbol();
+                        if (!nextSym.isEpsilon()) {
+                            symbols.insert(nextSym);
+                        }
+                    }
+                }
+
+                for (const Symbol &symbol : symbols) {
+                    pair<int, Symbol> transition = {i, symbol};
+                    if (processedTransitions.count(transition)) continue;
+                    processedTransitions.insert(transition);
+
+                    ItemSet nextSet = gotoSet(itemSets[i], symbol);
+                    if (nextSet.items.empty()) continue;
+
+                    auto it = find(itemSets.begin(), itemSets.end(), nextSet);
+                    if (it == itemSets.end()) {
+                        nextSet.state = static_cast<int>(itemSets.size());
+                        itemSets.push_back(nextSet);
+                        transitions[i][symbol] = nextSet.state;
+                        changed = true;
+                    } else {
+                        transitions[i][symbol] = it - itemSets.begin();
+                    }
+                }
+            }
+        } while (changed);
+    }
+
+  public:
+    unordered_map<int, unordered_map<Symbol, Action>> actionTable;
+    unordered_map<int, unordered_map<Symbol, int>> gotoTable;
+
+    explicit SLRGrammar(const string &grammar) : Grammar(grammar) {
+        buildItemSets();
+        computeTables();
+    }
+
+    void computeTables() {
+        for (int i = 0; i < itemSets.size(); i++) {
+            const ItemSet& state = itemSets[i];
+
+            for (const auto& item : state.items) {
+                if (item.isComplete()) {
+                    // 归约项目
+                    if (item.production.left == startSymbol) {
+                        actionTable[i][Symbol(SymbolType::ENDMARK)] = Action(ActionType::ACCEPT);
+                    } else {
+                        // 普通归约项目 A -> α·
+                        // 对于 FOLLOW(A) 中的每个终结符 a，设置 ACTION[i,a] = reduce A -> α
+                        const auto& followSet = followSets.find(item.production.left);
+                        if (followSet != followSets.end()) {
+                            for (const auto& symbol : followSet->second) {
+                                if (symbol.isTerminal() || symbol.isEndMark()) {
+                                    // FIXME ID is not initialized yet
+                                    actionTable[i][symbol] = Action(ActionType::REDUCE, item.production.id);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // 移进项目
+                    Symbol nextSymbol = item.nextSymbol();
+                    auto transitionIt = transitions.find(i);
+
+                    if (transitionIt != transitions.end()) {
+                        auto symbolTransition = transitionIt->second.find(nextSymbol);
+                        if (symbolTransition != transitionIt->second.end()) {
+                            if (nextSymbol.isTerminal()) {
+                                // 对于终结符，设置 shift 动作
+                                actionTable[i][nextSymbol] = Action(ActionType::SHIFT, symbolTransition->second);
+                            } else if (nextSymbol.isNonTerminal()) {
+                                // 对于非终结符，设置 goto 表
+                                gotoTable[i][nextSymbol] = symbolTransition->second;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    friend ostream &operator<<(ostream &os, const SLRGrammar &g) {
+        os << "Item Sets:" << endl;
+        for (const auto &itemSet : g.itemSets) {
+            os << "State " << itemSet.state << ": ";
+            for (const auto &item : itemSet.items) {
+                os << item.production.left.value << " -> ";
+                for (size_t i = 0; i < item.production.right.size(); ++i) {
+                    if (i == item.dotPos) {
+                        os << ".";
+                    }
+                    os << item.production.right[i].value << " ";
+                }
+                if (item.dotPos == item.production.right.size()) {
+                    os << ".";
+                }
+                os << " | ";
+            }
+            os << endl;
+        }
+
+        os << "------------------------" << endl;
+
+        //        os << "Action Table:" << endl;
+        //        for (const auto &pair : g.actionTable) {
+        //            os << pair.first.value << ": ";
+        //            for (const auto &actionPair : pair.second) {
+        //                os << actionPair.first.value << " -> ";
+        //                if (actionPair.second.isShift()) {
+        //                    os << "SHIFT " << actionPair.second.state;
+        //                } else if (actionPair.second.isReduce()) {
+        //                    os << "REDUCE by " <<
+        //                    actionPair.second.production.toString();
+        //                } else if (actionPair.second.isAccept()) {
+        //                    os << "ACCEPT";
+        //                } else {
+        //                    os << "ERROR";
+        //                }
+        //                os << ", ";
+        //            }
+        //            os << endl;
+        //        }
 
         return os;
     }
 };
 
-class SLRGrammar : public Grammar {
-    public:
-        unordered_map<Symbol, unordered_map<Symbol, Production>> actionTable;
-        unordered_map<Symbol, unordered_map<Symbol, int>> gotoTable;
-    
-        explicit SLRGrammar(const string &grammar) : Grammar(grammar) {
-            computeActionGotoTables();
-        }
-    
-        void computeActionGotoTables() {}
-};
-
-string exp_grammar = R"(program -> compoundstmt
+string exp_grammar = R"(
+program -> compoundstmt
 stmt ->  ifstmt  |  whilestmt  |  assgstmt  |  compoundstmt
 compoundstmt ->  { stmts }
 stmts ->  stmt stmts   |   E
@@ -641,16 +820,29 @@ arithexpr  ->  multexpr arithexprprime
 arithexprprime ->  + multexpr arithexprprime  |  - multexpr arithexprprime  |   E
 multexpr ->  simpleexpr  multexprprime
 multexprprime ->  * simpleexpr multexprprime  |  / simpleexpr multexprprime  |   E
-simpleexpr ->  ID  |  NUM  |  ( arithexpr ))";
+simpleexpr ->  ID  |  NUM  |  ( arithexpr )
+)";
+
+string test_grammar = R"(
+S -> L = R | R
+L -> * R | id
+R -> L
+)";
+
+string test_grammar1 = R"(
+E' -> E' + T | T
+T -> T * F | F
+F -> ( E' ) | id
+)";
 
 void Analysis() {
     string prog;
-    read_prog(prog);
+    //    read_prog(prog);
     /* 骚年们 请开始你们的表演 */
     /********* Begin *********/
-    LL1Grammar grammar(exp_grammar);
-    auto tree = grammar.parse(prog);
-    printParseTree(tree);
+    SLRGrammar grammar(test_grammar);
+    cout << grammar << endl;
+
     /********* End *********/
 }
 
