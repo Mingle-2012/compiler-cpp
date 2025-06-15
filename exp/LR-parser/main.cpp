@@ -616,6 +616,18 @@ class LL1Grammar : public Grammar {
     }
 };
 
+class SLRGrammar : public Grammar {
+    public:
+        unordered_map<Symbol, unordered_map<Symbol, Production>> actionTable;
+        unordered_map<Symbol, unordered_map<Symbol, int>> gotoTable;
+    
+        explicit SLRGrammar(const string &grammar) : Grammar(grammar) {
+            computeActionGotoTables();
+        }
+    
+        void computeActionGotoTables() {}
+};
+
 string exp_grammar = R"(program -> compoundstmt
 stmt ->  ifstmt  |  whilestmt  |  assgstmt  |  compoundstmt
 compoundstmt ->  { stmts }

@@ -513,53 +513,6 @@ class LL1Grammar : public Grammar {
         }
     }
 
-    bool tryRecoverMissingSemicolon(const Symbol &nonTerminal,
-                                    const Symbol &currentInput,
-                                    stack<Symbol> &parseStack,
-                                    stack<shared_ptr<ParseTreeNode>> &nodeStack,
-                                    shared_ptr<ParseTreeNode> &currentNode) {
-        Symbol semicolon(";");
-        if (parseTable.count(nonTerminal) &&
-            parseTable.at(nonTerminal).count(semicolon)) {
-            const Production &prod = parseTable.at(nonTerminal).at(semicolon);
-            auto semicolonNode = make_shared<ParseTreeNode>(semicolon);
-            semicolonNode->symbol = currentInput;
-            currentNode->addChild(semicolonNode);
-
-            vector<shared_ptr<ParseTreeNode>> children;
-            for (const auto &sym : prod.right) {
-                if (!sym.isEpsilon() && sym.value != ";") {
-                    auto child = make_shared<ParseTreeNode>(sym);
-                    children.push_back(child);
-                    currentNode->addChild(child);
-                }
-            }
-
-            while (!parseStack.empty() &&
-                   parseStack.top().value != semicolon.value) {
-                parseStack.pop();
-                nodeStack.pop();
-            }
-            parseStack.pop();
-            nodeStack.pop();
-
-            for (auto it = prod.right.rbegin(); it != prod.right.rend(); ++it) {
-                if (!it->isEpsilon() && it->value != ";") {
-                    parseStack.push(*it);
-                    for (auto &child : children) {
-                        if (child->symbol.value == it->value) {
-                            nodeStack.push(child);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            return true;
-        }
-        return false;
-    }
-
     shared_ptr<ParseTreeNode> parse(const string &input) {
         auto tokens = tokenize(input);
         auto currentToken = 0;
@@ -683,16 +636,9 @@ void Analysis() {
     read_prog(prog);
     /* 骚年们 请开始你们的表演 */
     /********* Begin *********/
-    //     LL1Grammar grammar(test_grammar);
-    //     cout << grammar << endl;
     LL1Grammar grammar(exp_grammar);
     auto tree = grammar.parse(prog);
-    if (tree) {
-        printParseTree(tree);
-    } else {
-        cout << "Parsing failed." << endl;
-    }
-
+    printParseTree(tree);
     /********* End *********/
 }
 
