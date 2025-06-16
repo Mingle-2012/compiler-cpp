@@ -55,14 +55,14 @@ class Symbol {
     }
 
     explicit Symbol(const string &v) : value(v) {
-        std::string upperV = v;
-        std::transform(upperV.begin(), upperV.end(), upperV.begin(),
-                       [](unsigned char c){ return std::toupper(c); });
-        if (upperV == "E") {
+        string lowV = v;
+        transform(lowV.begin(), lowV.end(), lowV.begin(),
+                       [](unsigned char c) { return tolower(c); });
+        if (v == "E") {
             type = SymbolType::EPSILON;
-        } else if (upperV == "$") {
+        } else if (v == "$") {
             type = SymbolType::ENDMARK;
-        } else if (terminalSymbols.count(upperV)) {
+        } else if (terminalSymbols.count(lowV)) {
             type = SymbolType::TERMINAL;
         } else {
             type = SymbolType::NONTERMINAL;
@@ -116,8 +116,8 @@ template <> struct std::hash<Symbol> {
 };
 
 const unordered_set<string> Symbol::terminalSymbols = {
-    "{", "}",  "(",  ")",  "if", "then", "else", "while", "ID", "=",  "<",
-    ">", "<=", ">=", "==", "+",  "-",    "*",    "/",     ";",  "NUM"};
+    "{", "}",  "(",  ")",  "if", "then", "else", "while", "id", "=",  "<",
+    ">", "<=", ">=", "==", "+",  "-",    "*",    "/",     ";",  "num"};
 
 class Production {
   public:
@@ -128,7 +128,8 @@ class Production {
 
     Production() = default;
 
-    Production(const string &leftStr, const vector<string> &rightStrs, const int id = -1) {
+    Production(const string &leftStr, const vector<string> &rightStrs,
+               const int id = -1) {
         left = Symbol(leftStr);
         for (const auto &str : rightStrs) {
             right.emplace_back(str);
@@ -271,7 +272,8 @@ struct ParseTreeNode {
     }
 };
 
-void printParseTree(const shared_ptr<ParseTreeNode> &node, const int depth = 0) {
+void printParseTree(const shared_ptr<ParseTreeNode> &node,
+                    const int depth = 0) {
     if (!node)
         return;
     for (int i = 0; i < depth; ++i) {
@@ -284,15 +286,18 @@ void printParseTree(const shared_ptr<ParseTreeNode> &node, const int depth = 0) 
 }
 
 class Grammar {
-  public:
+
+  protected:
+    std::unordered_set<Symbol> computing;
+
     Symbol startSymbol;
     unordered_set<Symbol> terminals;
     unordered_set<Symbol> nonTerminals;
     unordered_map<Symbol, unordered_set<Symbol>> firstSets;
     unordered_map<Symbol, unordered_set<Symbol>> followSets;
-
     vector<Production> productions;
 
+  public:
     explicit Grammar(const string &grammar) {
         istringstream iss(grammar);
         string line;
@@ -325,7 +330,6 @@ class Grammar {
     }
 
     unordered_set<Symbol> computeFirstSet(const Symbol &symbol) {
-        // FIXME Cannot handle left recursion
         if (symbol.isTerminal() || symbol.isEpsilon()) {
             return {symbol};
         }
@@ -333,6 +337,11 @@ class Grammar {
         if (firstSets.count(symbol) && !firstSets[symbol].empty()) {
             return firstSets[symbol];
         }
+
+        if (computing.count(symbol)) {
+            return {};
+        }
+        computing.insert(symbol);
 
         unordered_set<Symbol> result;
         for (const auto &prod : productions) {
@@ -368,6 +377,7 @@ class Grammar {
             }
         }
 
+        computing.erase(symbol);
         firstSets[symbol].insert(result.begin(), result.end());
         return result;
     }
@@ -529,7 +539,7 @@ class Action {
 
     Action() : type(ERROR), state(-1) {}
 
-    explicit Action(const ActionType t, const int num = -1){
+    explicit Action(const ActionType t, const int num = -1) {
         if (t == SHIFT || t == ACCEPT) {
             type = t;
             state = num;
@@ -605,7 +615,7 @@ template <> struct std::hash<Item> {
 };
 
 template <> struct std::hash<std::pair<int, Symbol>> {
-    size_t operator()(const std::pair<int, Symbol>& p) const noexcept {
+    size_t operator()(const std::pair<int, Symbol> &p) const noexcept {
         return hash<int>()(p.first) ^ (hash<Symbol>()(p.second) << 1);
     }
 };
@@ -635,6 +645,9 @@ class SLRGrammar : public Grammar {
     Symbol extend_production;
     vector<ItemSet> itemSets;
     unordered_map<int, unordered_map<Symbol, int>> transitions;
+
+    unordered_map<int, unordered_map<Symbol, Action>> actionTable;
+    unordered_map<int, unordered_map<Symbol, int>> gotoTable;
 
     ItemSet closure(const ItemSet &itemSet) const {
         ItemSet closureSet = itemSet;
@@ -683,7 +696,8 @@ class SLRGrammar : public Grammar {
             }
         }
         initialSet = closure(initialSet);
-        initialSet.add(Item(Production(startSymbol.value + "'", {startSymbol.value}), 0));
+        initialSet.add(
+            Item(Production(startSymbol.value + "'", {startSymbol.value}), 0));
         itemSets.push_back(initialSet);
 
         unordered_set<pair<int, Symbol>> processedTransitions;
@@ -704,11 +718,13 @@ class SLRGrammar : public Grammar {
 
                 for (const Symbol &symbol : symbols) {
                     pair<int, Symbol> transition = {i, symbol};
-                    if (processedTransitions.count(transition)) continue;
+                    if (processedTransitions.count(transition))
+                        continue;
                     processedTransitions.insert(transition);
 
                     ItemSet nextSet = gotoSet(itemSets[i], symbol);
-                    if (nextSet.items.empty()) continue;
+                    if (nextSet.items.empty())
+                        continue;
 
                     auto it = find(itemSets.begin(), itemSets.end(), nextSet);
                     if (it == itemSets.end()) {
@@ -724,29 +740,22 @@ class SLRGrammar : public Grammar {
         } while (changed);
     }
 
-  public:
-    unordered_map<int, unordered_map<Symbol, Action>> actionTable;
-    unordered_map<int, unordered_map<Symbol, int>> gotoTable;
-
-    explicit SLRGrammar(const string &grammar) : Grammar(grammar) {
-        extend_production = Symbol(startSymbol.value + "'");
-        buildItemSets();
-        computeTables();
-    }
-
     void computeTables() {
         for (int i = 0; i < itemSets.size(); i++) {
-            const ItemSet& state = itemSets[i];
-            for (const auto& item : state.items) {
+            const ItemSet &state = itemSets[i];
+            for (const auto &item : state.items) {
                 if (item.isComplete()) {
                     if (item.production.left == extend_production) {
-                        actionTable[i][Symbol(SymbolType::ENDMARK)] = Action(ACCEPT);
+                        actionTable[i][Symbol(SymbolType::ENDMARK)] =
+                            Action(ACCEPT);
                     } else {
-                        const auto& followSet = followSets.find(item.production.left);
+                        const auto &followSet =
+                            followSets.find(item.production.left);
                         if (followSet != followSets.end()) {
-                            for (const auto& symbol : followSet->second) {
+                            for (const auto &symbol : followSet->second) {
                                 if (symbol.isTerminal() || symbol.isEndMark()) {
-                                    actionTable[i][symbol] = Action(REDUCE, item.production.id);
+                                    actionTable[i][symbol] =
+                                        Action(REDUCE, item.production.id);
                                 }
                             }
                         }
@@ -755,12 +764,15 @@ class SLRGrammar : public Grammar {
                     Symbol nextSymbol = item.nextSymbol();
                     auto transitionIt = transitions.find(i);
                     if (transitionIt != transitions.end()) {
-                        auto symbolTransition = transitionIt->second.find(nextSymbol);
+                        auto symbolTransition =
+                            transitionIt->second.find(nextSymbol);
                         if (symbolTransition != transitionIt->second.end()) {
                             if (nextSymbol.isTerminal()) {
-                                actionTable[i][nextSymbol] = Action(SHIFT, symbolTransition->second);
+                                actionTable[i][nextSymbol] =
+                                    Action(SHIFT, symbolTransition->second);
                             } else if (nextSymbol.isNonTerminal()) {
-                                gotoTable[i][nextSymbol] = symbolTransition->second;
+                                gotoTable[i][nextSymbol] =
+                                    symbolTransition->second;
                             }
                         }
                     }
@@ -769,81 +781,97 @@ class SLRGrammar : public Grammar {
         }
     }
 
-    void parse(const string& input){
-        auto tokens = tokenize(input);
-        stack<int> stateStack;        // 状态栈
-        stack<Symbol> symbolStack;    // 符号栈
-        vector<string> derivationSteps;
+  public:
+    explicit SLRGrammar(const string &grammar) : Grammar(grammar) {
+        extend_production = Symbol(startSymbol.value + "'");
+        buildItemSets();
+        computeTables();
+    }
 
-        stateStack.push(0);  // 初始状态
-        symbolStack.push(Symbol(SymbolType::ENDMARK));
-        
+    void parse(const string &input) {
+        auto tokens = tokenize(input);
+        stack<int> stateStack;
+        stack<Symbol> symbolStack;
+
+        stateStack.push(0);
+        symbolStack.emplace(SymbolType::ENDMARK);
+
         int tokenIndex = 0;
-        derivationSteps.clear();
-        
-        // 初始推导步骤（从开始符号开始）
         string currentDerivation = startSymbol.value;
-        
+
         while (tokenIndex < tokens.size()) {
             int currentState = stateStack.top();
             Symbol currentToken = tokens[tokenIndex].first;
-            
-            // 查找动作
+
             auto it = actionTable[currentState].find(currentToken);
             if (it == actionTable[currentState].end()) {
-                cout << "Error: No action for state " << currentState 
-                     << " and token '" << currentToken.value 
-                     << "' (line " << tokens[tokenIndex].second << ")" << endl;
+                cerr << "Error: No action for state " << currentState
+                     << " and token '" << currentToken.value << "' (line "
+                     << tokens[tokenIndex].second << ")" << endl;
                 return;
             }
             auto action = it->second;
-            
+
             switch (action.type) {
-                case ActionType::SHIFT: {
-                    stateStack.push(action.state);
-                    symbolStack.push(currentToken);
-                    tokenIndex++;
-                    break;
-                }
-                
-                case ActionType::REDUCE: {
-                    const Production& prod = productions[action.productionId - 1];
-                    
-                    for (int i = 0; i < prod.right.size(); i++) {
-                        if (!stateStack.empty()) stateStack.pop();
-                        if (!symbolStack.empty()) symbolStack.pop();
-                    }
-                    symbolStack.push(prod.left);
-                    if (!stateStack.empty()) {
-                        int gotoState = getGoto(stateStack.top(), prod.left);
-                        if (gotoState != -1) {
-                            stateStack.push(gotoState);
-                        } else {
-                            cout << "Error: No GOTO entry for state " << stateStack.top() 
-                                 << " and symbol " << prod.left.value << endl;
-                        }
-                    }
-                    
-                    // 更新推导步骤
-                    updateDerivation(currentDerivation, prod);
-                    derivationSteps.push_back(currentDerivation);
-                    
-                    break;
-                }
-                
-                case ActionType::ACCEPT: {
-                    // 接受
-                    cout << "Parse successful!" << endl;
-                    printDerivation();
-                }
-                
-                case ActionType::ERROR:
-                default: {
-                    cout << "Parse error at token '" << currentToken.value 
-                         << "' (line " << tokens[tokenIndex].second << ")" << endl;
-                    cout << "Current state: " << currentState << endl;
-                }
+            case ActionType::SHIFT: {
+                stateStack.push(action.state);
+                symbolStack.push(currentToken);
+                ++tokenIndex;
+                break;
             }
+            case ActionType::REDUCE: {
+                const Production &prod = productions[action.productionId - 1];
+                cout << "Reducing by production: " << prod << endl;
+
+                for (int i = 0; i < prod.right.size(); i++) {
+                    if (!stateStack.empty())
+                        stateStack.pop();
+                    if (!symbolStack.empty())
+                        symbolStack.pop();
+                }
+                symbolStack.push(prod.left);
+                if (!stateStack.empty()) {
+                    auto iter = gotoTable[stateStack.top()].find(prod.left);
+                    if (iter == gotoTable[stateStack.top()].end()) {
+                        cout << "Error: No goto for state " << stateStack.top()
+                             << " and symbol '" << prod.left.value << "' (line "
+                             << tokens[tokenIndex].second << ")" << endl;
+                        return;
+                    }
+                    int gotoState = iter->second;
+                    stateStack.push(gotoState);
+                }
+
+                updateDerivation(currentDerivation, prod);
+                cout << currentDerivation << " => " << endl;
+                break;
+            }
+
+            case ActionType::ACCEPT: {
+                return;
+            }
+
+            case ActionType::ERROR:
+            default: {
+                cerr << "Parse error at token '" << currentToken.value
+                     << "' (line " << tokens[tokenIndex].second << ")" << endl;
+                cerr << "Current state: " << currentState << endl;
+                return;
+            }
+            }
+        }
+    }
+
+    void updateDerivation(string &derivation, const Production &production) {
+        size_t pos = derivation.rfind(production.left.value);
+        if (pos != string::npos) {
+            string rightSide;
+            for (int i = 0; i < production.right.size(); i++) {
+                if (i > 0)
+                    rightSide += " ";
+                rightSide += production.right[i].value;
+            }
+            derivation.replace(pos, production.left.value.length(), rightSide);
         }
     }
 
@@ -879,7 +907,9 @@ class SLRGrammar : public Grammar {
                 if (action.isShift()) {
                     os << symbol.value << " -> SHIFT " << action.state << ", ";
                 } else if (action.isReduce()) {
-                    os << symbol.value << " -> REDUCE (" << g.productions[action.productionId - 1].toString() << "), ";
+                    os << symbol.value << " -> REDUCE ("
+                       << g.productions[action.productionId - 1].toString()
+                       << "), ";
                 } else if (action.isAccept()) {
                     os << symbol.value << " -> ACCEPT, ";
                 } else if (action.isError()) {
@@ -897,7 +927,7 @@ class SLRGrammar : public Grammar {
             for (const auto &gotoPair : pair.second) {
                 const Symbol &symbol = gotoPair.first;
                 int nextState = gotoPair.second;
-                os << symbol.value << " -> GOTO " << nextState << ", ";
+                os << symbol.value << " -> " << nextState << ", ";
             }
             os << endl;
         }
@@ -935,13 +965,18 @@ T -> T * F | F
 F -> ( E' ) | id
 )";
 
+string test_input = R"({
+ID = NUM ;
+})";
+
 void Analysis() {
     string prog;
     //    read_prog(prog);
     /* 骚年们 请开始你们的表演 */
     /********* Begin *********/
-    SLRGrammar grammar(test_grammar);
+    SLRGrammar grammar(exp_grammar);
     cout << grammar << endl;
+    grammar.parse(test_input);
 
     /********* End *********/
 }
