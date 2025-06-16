@@ -117,21 +117,26 @@ const unordered_set<string> Symbol::terminalSymbols = {
 
 class Production {
   public:
-    // FIXME Support ID for productions
-    int id;
+    int id{-1};
+    static int nextId;
     Symbol left;
     vector<Symbol> right;
 
     Production() = default;
 
-    Production(const string &leftStr, const vector<string> &rightStrs) {
+    Production(const string &leftStr, const vector<string> &rightStrs, const int id = -1) {
         left = Symbol(leftStr);
         for (const auto &str : rightStrs) {
             right.emplace_back(str);
         }
+        if (id != -1) {
+            this->id = id;
+        } else {
+            this->id = nextId++;
+        }
     }
 
-    explicit Production(const string &rule) {
+    explicit Production(const string &rule, const int id = -1) {
         istringstream iss(rule);
         string leftSymbol, arrow;
         iss >> leftSymbol >> arrow;
@@ -145,6 +150,11 @@ class Production {
         string symbol;
         while (iss >> symbol) {
             right.emplace_back(symbol);
+        }
+        if (id != -1) {
+            this->id = id;
+        } else {
+            this->id = nextId++;
         }
     }
 
@@ -174,8 +184,10 @@ class Production {
     }
 };
 
+int Production::nextId = 1;
+
 template <> struct std::hash<Production> {
-    size_t operator()(const Production &prod) const {
+    size_t operator()(const Production &prod) const noexcept {
         return hash<string>()(prod.toString());
     }
 };
@@ -255,7 +267,7 @@ struct ParseTreeNode {
     }
 };
 
-void printParseTree(const shared_ptr<ParseTreeNode> &node, int depth = 0) {
+void printParseTree(const shared_ptr<ParseTreeNode> &node, const int depth = 0) {
     if (!node)
         return;
     for (int i = 0; i < depth; ++i) {
@@ -440,7 +452,7 @@ class Grammar {
                                 if (!hasEpsilon) {
                                     break;
                                 }
-                                current++;
+                                ++current;
                             }
 
                             if (hasEpsilon && prod.left.value != symbol.value) {
@@ -513,7 +525,7 @@ class Action {
 
     Action() : type(ERROR), state(-1) {}
 
-    explicit Action(ActionType t, int num = -1){
+    explicit Action(const ActionType t, const int num = -1){
         if (t == SHIFT || t == ACCEPT) {
             type = t;
             state = num;
@@ -583,23 +595,23 @@ class Item {
 };
 
 template <> struct std::hash<Item> {
-    size_t operator()(const Item &item) const {
+    size_t operator()(const Item &item) const noexcept {
         return hash<Production>()(item.production) ^ hash<int>()(item.dotPos);
     }
 };
 
-template <>
-    struct std::hash<std::pair<int, Symbol>> {
-        size_t operator()(const std::pair<int, Symbol>& p) const noexcept {
-            return hash<int>()(p.first) ^ (hash<Symbol>()(p.second) << 1);
-        }
-    };
+template <> struct std::hash<std::pair<int, Symbol>> {
+    size_t operator()(const std::pair<int, Symbol>& p) const noexcept {
+        return hash<int>()(p.first) ^ (hash<Symbol>()(p.second) << 1);
+    }
+};
+
 class ItemSet {
   public:
     unordered_set<Item> items;
     int state;
 
-    explicit ItemSet(int id = -1) : state(id) {}
+    explicit ItemSet(const int id = -1) : state(id) {}
 
     bool operator==(const ItemSet &other) const { return items == other.items; }
 
@@ -619,7 +631,7 @@ class SLRGrammar : public Grammar {
     vector<ItemSet> itemSets;
     unordered_map<int, unordered_map<Symbol, int>> transitions;
 
-    ItemSet closure(const ItemSet &itemSet) {
+    ItemSet closure(const ItemSet &itemSet) const {
         ItemSet closureSet = itemSet;
         bool changed;
         do {
@@ -645,7 +657,7 @@ class SLRGrammar : public Grammar {
         return closureSet;
     }
 
-    ItemSet gotoSet(const ItemSet &itemSet, const Symbol &symbol) {
+    ItemSet gotoSet(const ItemSet &itemSet, const Symbol &symbol) const {
         ItemSet gotoSet;
         for (const auto &item : itemSet.items) {
             if (item.isComplete())
@@ -719,38 +731,29 @@ class SLRGrammar : public Grammar {
     void computeTables() {
         for (int i = 0; i < itemSets.size(); i++) {
             const ItemSet& state = itemSets[i];
-
             for (const auto& item : state.items) {
                 if (item.isComplete()) {
-                    // 归约项目
                     if (item.production.left == startSymbol) {
                         actionTable[i][Symbol(SymbolType::ENDMARK)] = Action(ActionType::ACCEPT);
                     } else {
-                        // 普通归约项目 A -> α·
-                        // 对于 FOLLOW(A) 中的每个终结符 a，设置 ACTION[i,a] = reduce A -> α
                         const auto& followSet = followSets.find(item.production.left);
                         if (followSet != followSets.end()) {
                             for (const auto& symbol : followSet->second) {
                                 if (symbol.isTerminal() || symbol.isEndMark()) {
-                                    // FIXME ID is not initialized yet
                                     actionTable[i][symbol] = Action(ActionType::REDUCE, item.production.id);
                                 }
                             }
                         }
                     }
                 } else {
-                    // 移进项目
                     Symbol nextSymbol = item.nextSymbol();
                     auto transitionIt = transitions.find(i);
-
                     if (transitionIt != transitions.end()) {
                         auto symbolTransition = transitionIt->second.find(nextSymbol);
                         if (symbolTransition != transitionIt->second.end()) {
                             if (nextSymbol.isTerminal()) {
-                                // 对于终结符，设置 shift 动作
                                 actionTable[i][nextSymbol] = Action(ActionType::SHIFT, symbolTransition->second);
                             } else if (nextSymbol.isNonTerminal()) {
-                                // 对于非终结符，设置 goto 表
                                 gotoTable[i][nextSymbol] = symbolTransition->second;
                             }
                         }
@@ -782,25 +785,38 @@ class SLRGrammar : public Grammar {
 
         os << "------------------------" << endl;
 
-        //        os << "Action Table:" << endl;
-        //        for (const auto &pair : g.actionTable) {
-        //            os << pair.first.value << ": ";
-        //            for (const auto &actionPair : pair.second) {
-        //                os << actionPair.first.value << " -> ";
-        //                if (actionPair.second.isShift()) {
-        //                    os << "SHIFT " << actionPair.second.state;
-        //                } else if (actionPair.second.isReduce()) {
-        //                    os << "REDUCE by " <<
-        //                    actionPair.second.production.toString();
-        //                } else if (actionPair.second.isAccept()) {
-        //                    os << "ACCEPT";
-        //                } else {
-        //                    os << "ERROR";
-        //                }
-        //                os << ", ";
-        //            }
-        //            os << endl;
-        //        }
+        os << "Action Table:" << endl;
+        for (const auto &pair : g.actionTable) {
+            int state = pair.first;
+            os << "State " << state << ": ";
+            for (const auto &actionPair : pair.second) {
+                const Symbol &symbol = actionPair.first;
+                const Action &action = actionPair.second;
+                if (action.isShift()) {
+                    os << symbol.value << " -> SHIFT " << action.state << ", ";
+                } else if (action.isReduce()) {
+                    os << symbol.value << " -> REDUCE " << action.productionId << ", ";
+                } else if (action.isAccept()) {
+                    os << symbol.value << " -> ACCEPT, ";
+                } else if (action.isError()) {
+                    os << symbol.value << " -> ERROR, ";
+                }
+            }
+            os << endl;
+        }
+
+        os << "------------------------" << endl;
+        os << "Goto Table:" << endl;
+        for (const auto &pair : g.gotoTable) {
+            int state = pair.first;
+            os << "State " << state << ": ";
+            for (const auto &gotoPair : pair.second) {
+                const Symbol &symbol = gotoPair.first;
+                int nextState = gotoPair.second;
+                os << symbol.value << " -> GOTO " << nextState << ", ";
+            }
+            os << endl;
+        }
 
         return os;
     }
