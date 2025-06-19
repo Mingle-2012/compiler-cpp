@@ -1,6 +1,5 @@
 // C语言词法分析器
 #include <algorithm>
-#include <cstddef>
 #include <cstdio>
 #include <fstream>
 #include <ios>
@@ -165,6 +164,7 @@ class Production {
 
     Production &operator=(const Production &other) {
         if (this != &other) {
+            id = other.id;
             left = other.left;
             right = other.right;
         }
@@ -535,6 +535,7 @@ class Action {
     union {
         int state;
         int productionId;
+        int err;
     };
 
     Action() : type(ERROR), state(-1) {}
@@ -548,7 +549,7 @@ class Action {
             productionId = num;
         } else {
             type = ERROR;
-            state = -1;
+            err = num;
         }
     }
 
@@ -561,17 +562,37 @@ class Action {
         if (this != &other) {
             type = other.type;
             state = other.state;
+            productionId = other.productionId;
+            err = other.err;
         }
         return *this;
     }
 };
+
+unordered_map<std::string, int> errorCodeMap = {
+    {"}", 1},
+    {"+", 2}, {"-", 2}, {"*", 2}, {"/", 2},
+    {"id", 3},
+    {";", 4},
+    {")", 5}, {"]", 5},
+};
+
+int getErrorCode(const Symbol &terminal) {
+    const auto it = errorCodeMap.find(terminal.value);
+    return it != errorCodeMap.end() ? it->second : 0;
+}
 
 class Item {
   public:
     Production production;
     int dotPos;
 
-    Item(const Production &prod, int pos) : production(prod), dotPos(pos) {}
+    Item(const Production &prod, const int pos) : production(prod), dotPos(pos) {
+        production.right.erase(
+            remove_if(production.right.begin(), production.right.end(),
+                      [](const Symbol &s) { return s.isEpsilon(); }),
+            production.right.end());
+    }
 
     Item &operator=(const Item &other) {
         if (this != &other) {
@@ -697,7 +718,7 @@ class SLRGrammar : public Grammar {
         }
         initialSet = closure(initialSet);
         initialSet.add(
-            Item(Production(startSymbol.value + "'", {startSymbol.value}), 0));
+            Item(Production(extend_production.value, {startSymbol.value}, 0), 0));
         itemSets.push_back(initialSet);
 
         unordered_set<pair<int, Symbol>> processedTransitions;
@@ -741,41 +762,53 @@ class SLRGrammar : public Grammar {
     }
 
     void computeTables() {
+        actionTable.clear();
+        gotoTable.clear();
+
         for (int i = 0; i < itemSets.size(); i++) {
             const ItemSet &state = itemSets[i];
             for (const auto &item : state.items) {
+                if (!item.isComplete()) {
+                    Symbol nextSymbol = item.nextSymbol();
+                    auto transitionIt = transitions.find(i);
+                    if (transitionIt != transitions.end()) {
+                        auto symbolTransition = transitionIt->second.find(nextSymbol);
+                        if (symbolTransition != transitionIt->second.end()) {
+                            if (nextSymbol.isTerminal()) {
+                                Action newAction(SHIFT, symbolTransition->second);
+                                actionTable[i][nextSymbol] = newAction;
+                            } else if (nextSymbol.isNonTerminal()) {
+                                gotoTable[i][nextSymbol] = symbolTransition->second;
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (const auto &item : state.items) {
                 if (item.isComplete()) {
                     if (item.production.left == extend_production) {
-                        actionTable[i][Symbol(SymbolType::ENDMARK)] =
-                            Action(ACCEPT);
+                        Symbol endmark(SymbolType::ENDMARK);
+                        actionTable[i][endmark] = Action(ACCEPT);
                     } else {
-                        const auto &followSet =
-                            followSets.find(item.production.left);
+                        const auto &followSet = followSets.find(item.production.left);
                         if (followSet != followSets.end()) {
                             for (const auto &symbol : followSet->second) {
                                 if (symbol.isTerminal() || symbol.isEndMark()) {
-                                    actionTable[i][symbol] =
-                                        Action(REDUCE, item.production.id);
+                                    Action newAction(REDUCE, item.production.id);
+                                    actionTable[i][symbol] = newAction;
                                 }
                             }
                         }
                     }
-                } else {
-                    Symbol nextSymbol = item.nextSymbol();
-                    auto transitionIt = transitions.find(i);
-                    if (transitionIt != transitions.end()) {
-                        auto symbolTransition =
-                            transitionIt->second.find(nextSymbol);
-                        if (symbolTransition != transitionIt->second.end()) {
-                            if (nextSymbol.isTerminal()) {
-                                actionTable[i][nextSymbol] =
-                                    Action(SHIFT, symbolTransition->second);
-                            } else if (nextSymbol.isNonTerminal()) {
-                                gotoTable[i][nextSymbol] =
-                                    symbolTransition->second;
-                            }
-                        }
-                    }
+                }
+            }
+        }
+
+        for (int i = 0 ; i < itemSets.size(); i++) {
+            for (auto &terminal : terminals) {
+                if (actionTable[i].find(terminal) == actionTable[i].end()) {
+                    actionTable[i][terminal] = Action(ERROR, getErrorCode(terminal));
                 }
             }
         }
@@ -794,10 +827,8 @@ class SLRGrammar : public Grammar {
         stack<Symbol> symbolStack;
 
         stateStack.push(0);
-        symbolStack.emplace(SymbolType::ENDMARK);
-
         int tokenIndex = 0;
-        string currentDerivation = startSymbol.value;
+        vector<Production> steps;
 
         while (tokenIndex < tokens.size()) {
             int currentState = stateStack.top();
@@ -813,17 +844,15 @@ class SLRGrammar : public Grammar {
             auto action = it->second;
 
             switch (action.type) {
-            case ActionType::SHIFT: {
+            case SHIFT: {
                 stateStack.push(action.state);
                 symbolStack.push(currentToken);
                 ++tokenIndex;
                 break;
-            }
-            case ActionType::REDUCE: {
+            }case REDUCE: {
                 const Production &prod = productions[action.productionId - 1];
-                cout << "Reducing by production: " << prod << endl;
-
-                for (int i = 0; i < prod.right.size(); i++) {
+                steps.emplace_back(prod);
+                for (int i = 0; i < prod.right.size() && !prod.right[i].isEpsilon() ; ++i) {
                     if (!stateStack.empty())
                         stateStack.pop();
                     if (!symbolStack.empty())
@@ -833,49 +862,79 @@ class SLRGrammar : public Grammar {
                 if (!stateStack.empty()) {
                     auto iter = gotoTable[stateStack.top()].find(prod.left);
                     if (iter == gotoTable[stateStack.top()].end()) {
-                        cout << "Error: No goto for state " << stateStack.top()
-                             << " and symbol '" << prod.left.value << "' (line "
+                        cerr << "Error: No goto for state "
+                             << stateStack.top() << " and symbol '"
+                             << prod.left.value << "' (line "
                              << tokens[tokenIndex].second << ")" << endl;
                         return;
                     }
                     int gotoState = iter->second;
                     stateStack.push(gotoState);
                 }
+                break;
+            }case ACCEPT: {
+                vector<Symbol> symbols = {startSymbol};
+                for (auto rit = steps.rbegin(); rit != steps.rend(); ++rit) {
+                    for (auto& sym : symbols) {
+                        cout << sym << " ";
+                    }
+                    cout << "=> " << endl;
+                    for (auto prit = symbols.rbegin(); prit != symbols.rend(); ++prit) {
+                        if (rit->left == *prit) {
+                            auto baseIt = prit.base();
+                            symbols.erase(baseIt - 1);
+                            if (!rit->right.empty() && !(rit->right.size() == 1 && rit->right[0].isEpsilon())) {
+                                symbols.insert(baseIt - 1, rit->right.begin(), rit->right.end());
+                            }
+                            break;
+                        }
+                    }
+                }
 
-                updateDerivation(currentDerivation, prod);
-                cout << currentDerivation << " => " << endl;
+                for (int x = 0 ; x < tokens.size() - 1 ; ++x) {
+                    cout << tokens[x].first << " "[x == tokens.size() - 1];
+                }
+                return;
+            }case ERROR: {
+                switch (action.err) {
+                    case 1: {
+                        cout << "语法错误，第" << tokens[tokenIndex].second - 1 << "行，缺少\";\"" << endl;
+                        tokens.insert(tokens.begin() + tokenIndex, {Symbol(";"), tokens[tokenIndex].second});
+                        break;
+                    }
+                    case 2: {
+                        cout << "语法错误，第" << tokens[tokenIndex].second << "行，缺少\"ID\""<< endl;
+                        tokens.insert(tokens.begin() + tokenIndex, {Symbol("ID"), tokens[tokenIndex].second});
+                    }
+                    case 3: {
+                        cout << "语法错误，第" << tokens[tokenIndex].second << "行，缺少运算符" << endl;
+                        tokens.insert(tokens.begin() + tokenIndex, {Symbol("+"), tokens[tokenIndex].second});
+                    }
+                    case 4: {
+                        cout << "语法错误，第" << tokens[tokenIndex].second << "行，意外的\";\"" << endl;
+                        tokens.erase(tokens.begin() + tokenIndex);
+                    }
+                    case 5: {
+                        cout << "语法错误，第" << tokens[tokenIndex].second << "行，不匹配的\"" << tokens[tokenIndex].second << "\"" << endl;
+                        tokens.erase(tokens.begin() + tokenIndex);
+                    }
+                    case 0:
+                    default: {
+                        cerr << "Error: Unrecognized token type " << action.err << endl;
+                    }
+                }
                 break;
             }
-
-            case ActionType::ACCEPT: {
-                return;
-            }
-
-            case ActionType::ERROR:
             default: {
-                cerr << "Parse error at token '" << currentToken.value
-                     << "' (line " << tokens[tokenIndex].second << ")" << endl;
-                cerr << "Current state: " << currentState << endl;
-                return;
+                throw runtime_error("Error: Unrecognized action type");
             }
             }
-        }
-    }
-
-    void updateDerivation(string &derivation, const Production &production) {
-        size_t pos = derivation.rfind(production.left.value);
-        if (pos != string::npos) {
-            string rightSide;
-            for (int i = 0; i < production.right.size(); i++) {
-                if (i > 0)
-                    rightSide += " ";
-                rightSide += production.right[i].value;
-            }
-            derivation.replace(pos, production.left.value.length(), rightSide);
         }
     }
 
     friend ostream &operator<<(ostream &os, const SLRGrammar &g) {
+        os << static_cast<const Grammar &>(g);
+        os << "------------------------" << endl;
         os << "Item Sets:" << endl;
         for (const auto &itemSet : g.itemSets) {
             os << "State " << itemSet.state << ": ";
@@ -896,7 +955,15 @@ class SLRGrammar : public Grammar {
         }
 
         os << "------------------------" << endl;
+        for (const auto &stateTransitions : g.transitions) {
+            int fromState = stateTransitions.first;
+            for (const auto &symbolTransition : stateTransitions.second) {
+                cout << "State " << fromState << " --" << symbolTransition.first.value
+                     << "--> State " << symbolTransition.second << endl;
+            }
+        }
 
+        os << "------------------------" << endl;
         os << "Action Table:" << endl;
         for (const auto &pair : g.actionTable) {
             int state = pair.first;
@@ -907,7 +974,7 @@ class SLRGrammar : public Grammar {
                 if (action.isShift()) {
                     os << symbol.value << " -> SHIFT " << action.state << ", ";
                 } else if (action.isReduce()) {
-                    os << symbol.value << " -> REDUCE ("
+                    os << symbol.value << " -> REDUCE " << action.productionId << " ("
                        << g.productions[action.productionId - 1].toString()
                        << "), ";
                 } else if (action.isAccept()) {
@@ -953,30 +1020,13 @@ multexprprime ->  * simpleexpr multexprprime  |  / simpleexpr multexprprime  |  
 simpleexpr ->  ID  |  NUM  |  ( arithexpr )
 )";
 
-string test_grammar = R"(
-S -> L = R | R
-L -> * R | ID
-R -> L
-)";
-
-string test_grammar1 = R"(
-E' -> E' + T | T
-T -> T * F | F
-F -> ( E' ) | id
-)";
-
-string test_input = R"({
-ID = NUM ;
-})";
-
 void Analysis() {
     string prog;
-    //    read_prog(prog);
+    read_prog(prog);
     /* 骚年们 请开始你们的表演 */
     /********* Begin *********/
     SLRGrammar grammar(exp_grammar);
-    cout << grammar << endl;
-    grammar.parse(test_input);
+    grammar.parse(prog);
 
     /********* End *********/
 }

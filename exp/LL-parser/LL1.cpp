@@ -541,7 +541,6 @@ class LL1Grammar : public Grammar {
                 } else {
                     cout << "语法错误,第" << tokens[currentToken].second - 1
                          << "行,缺少\"" << top.value << "\"" << endl;
-                    continue;
                 }
             } else if (top.isNonTerminal()) {
                 if (parseTable.count(top) &&
@@ -558,7 +557,6 @@ class LL1Grammar : public Grammar {
                             currentNode->addChild(child);
                         }
                     }
-
                     for (auto it = prod.right.rbegin(); it != prod.right.rend();
                          ++it) {
                         if (!it->isEpsilon()) {
@@ -567,13 +565,11 @@ class LL1Grammar : public Grammar {
                                 children[prod.right.rend() - it - 1]);
                         }
                     }
-
                     if (prod.right.size() == 1 && prod.right[0].isEpsilon()) {
                         auto epsilonChild =
                             make_shared<ParseTreeNode>(prod.right[0]);
                         currentNode->addChild(epsilonChild);
                     }
-
                 } else {
                     const auto &table = parseTable.at(top);
                     if (!table.count(currentInput)) {
@@ -598,9 +594,8 @@ class LL1Grammar : public Grammar {
 
         if (parseStack.empty() && currentToken == tokens.size()) {
             return root;
-        } else {
-            return nullptr;
         }
+        return nullptr;
     }
 
     friend ostream &operator<<(ostream &os, const LL1Grammar &g) {
