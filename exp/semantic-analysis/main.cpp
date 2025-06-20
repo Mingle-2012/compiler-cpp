@@ -1,5 +1,6 @@
 // C语言词法分析器
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <fstream>
 #include <ios>
@@ -24,6 +25,14 @@ void read_prog(string &prog) {
 }
 /* 你可以添加其他函数 */
 
+#define DEBUG 0
+
+enum class ValueType {
+    INT,
+    REAL,
+    NONE
+};
+
 enum class SymbolType {
     TERMINAL,
     NONTERMINAL,
@@ -32,10 +41,43 @@ enum class SymbolType {
     ENDMARK
 };
 
+class Value {
+  public:
+    ValueType type;
+    double    val{0.0};
+    string    name;
+
+    Value() : type(ValueType::NONE) {}
+
+    static bool isNumber(const std::string &s) {
+        std::istringstream iss(s);
+        double             d;
+        char               c;
+        return iss >> d && !(iss >> c);
+    }
+
+    explicit Value(const std::string &v) : type(ValueType::NONE) {
+        if (isNumber(v)) {
+            val  = std::stod(v);
+            type = v.find('.') != string::npos ? ValueType::REAL : ValueType::INT;
+        } else {
+            name = v;
+        }
+    }
+
+    explicit Value(const double v) : type(ValueType::REAL), val(v) {}
+    explicit Value(const int v) : type(ValueType::INT), val(v) {}
+
+    [[nodiscard]] bool isInt() const { return type == ValueType::INT; }
+    [[nodiscard]] bool isReal() const { return type == ValueType::REAL; }
+};
+
 class Symbol {
-public:
+  public:
     SymbolType type;
-    string value;
+    string     value;
+
+    Value valueData;
 
     int line{-1};
 
@@ -43,7 +85,7 @@ public:
 
     Symbol() : type(SymbolType::NONTERMINAL) {}
 
-    explicit Symbol(SymbolType t, const int l = -1) : type(t), line(l) {
+    explicit Symbol(const SymbolType t, const int l = -1) : type(t), line(l) {
         if (t == SymbolType::EPSILON) {
             value = "E";
         } else if (t == SymbolType::ENDMARK) {
@@ -57,8 +99,7 @@ public:
 
     explicit Symbol(const string &v, const int l = -1) : value(v), line(l) {
         string lowV = v;
-        transform(lowV.begin(), lowV.end(), lowV.begin(),
-                       [](unsigned char c) { return tolower(c); });
+        transform(lowV.begin(), lowV.end(), lowV.begin(), [](const unsigned char c) { return tolower(c); });
         if (v == "E") {
             type = SymbolType::EPSILON;
         } else if (v == "$") {
@@ -83,8 +124,8 @@ public:
 
     Symbol &operator=(const Symbol &other) {
         if (this != &other) {
-            line = other.line;
-            type = other.type;
+            line  = other.line;
+            type  = other.type;
             value = other.value;
         }
         return *this;
@@ -113,31 +154,89 @@ public:
     }
 };
 
-template <> struct std::hash<Symbol> {
+template <>
+struct std::hash<Symbol> {
     size_t operator()(const Symbol &s) const noexcept { return s.hash(); }
 };
 
-template <> struct std::hash<std::pair<int, Symbol>> {
+template <>
+struct std::hash<std::pair<int, Symbol>> {
     size_t operator()(const std::pair<int, Symbol> &p) const noexcept {
         return hash<int>()(p.first) ^ (hash<Symbol>()(p.second) << 1);
     }
 };
 
 const unordered_set<string> Symbol::terminalSymbols = {
-    "{", "}",  "(",  ")",  "if", "then", "else", "while", "id", "=",  "<",
-    ">", "<=", ">=", "==", "+",  "-",    "*",    "/",     ";",  "num"};
+    "{",
+    "}",
+    "(",
+    ")",
+    "if",
+    "then",
+    "else",
+    "while",
+    "id",
+    "=",
+    "<",
+    ">",
+    "<=",
+    ">=",
+    "==",
+    "+",
+    "-",
+    "*",
+    "/",
+    ";",
+    "intnum",
+    "realnum",
+    "int",
+    "real"};
+
+enum class ProductionType {
+    DECLARE,
+    INSTANT,
+    IDVALUE,
+    ASSIGN,
+    ARITHPRIME,
+    BOOL,
+    BOOLOP,
+    COMPOUND,
+    IF_STMT,
+    OTHER
+};
+
+unordered_map<int, ProductionType> production_types = {
+    {4, ProductionType::DECLARE},
+    {5, ProductionType::DECLARE},
+    {12, ProductionType::IF_STMT},
+    {13, ProductionType::ASSIGN},
+    {14, ProductionType::BOOL},
+    {15, ProductionType::BOOLOP},
+    {16, ProductionType::BOOLOP},
+    {17, ProductionType::BOOLOP},
+    {18, ProductionType::BOOLOP},
+    {19, ProductionType::BOOLOP},
+    {21, ProductionType::ARITHPRIME},
+    {22, ProductionType::ARITHPRIME},
+    {25, ProductionType::ARITHPRIME},
+    {26, ProductionType::ARITHPRIME},
+    {28, ProductionType::IDVALUE},
+    {29, ProductionType::INSTANT},
+    {30, ProductionType::INSTANT},
+};
 
 class Production {
   public:
-    int id{-1};
-    static int nextId;
-    Symbol left;
+    int            id{-1};
+    static int     nextId;
+    Symbol         left;
     vector<Symbol> right;
+
+    ProductionType semType = ProductionType::OTHER;
 
     Production() = default;
 
-    Production(const string &leftStr, const vector<string> &rightStrs,
-               const int id = -1) {
+    Production(const string &leftStr, const vector<string> &rightStrs, const int id = -1) {
         left = Symbol(leftStr);
         for (const auto &str : rightStrs) {
             right.emplace_back(str);
@@ -147,11 +246,15 @@ class Production {
         } else {
             this->id = nextId++;
         }
+        const auto it = production_types.find(this->id);
+        if (it != production_types.end()) {
+            semType = it->second;
+        }
     }
 
     explicit Production(const string &rule, const int id = -1) {
         istringstream iss(rule);
-        string leftSymbol, arrow;
+        string        leftSymbol, arrow;
         iss >> leftSymbol >> arrow;
 
         if (arrow != "->") {
@@ -169,12 +272,16 @@ class Production {
         } else {
             this->id = nextId++;
         }
+        const auto it = production_types.find(this->id);
+        if (it != production_types.end()) {
+            semType = it->second;
+        }
     }
 
     Production &operator=(const Production &other) {
         if (this != &other) {
-            id = other.id;
-            left = other.left;
+            id    = other.id;
+            left  = other.left;
             right = other.right;
         }
         return *this;
@@ -200,7 +307,8 @@ class Production {
 
 int Production::nextId = 1;
 
-template <> struct std::hash<Production> {
+template <>
+struct std::hash<Production> {
     size_t operator()(const Production &prod) const noexcept {
         return hash<string>()(prod.toString());
     }
@@ -219,15 +327,15 @@ vector<Production> parseProductions(const string &line) {
         throw runtime_error("Invalid production missing '->'");
     }
 
-    string leftStr = line.substr(0, arrowPos);
+    string leftStr  = line.substr(0, arrowPos);
     string rightStr = line.substr(arrowPos + 2);
 
-    string leftTrimmed;
+    string        leftTrimmed;
     istringstream lss(leftStr);
     lss >> leftTrimmed;
 
-    istringstream rss(rightStr);
-    string token;
+    istringstream  rss(rightStr);
+    string         token;
     vector<string> currentRight;
     while (rss >> token) {
         if (token == "|") {
@@ -247,17 +355,44 @@ vector<Production> parseProductions(const string &line) {
 
 vector<Symbol> tokenize(const string &input) {
     vector<Symbol> tokens;
-    istringstream iss(input);
-    string line;
-    int lineNumber = 1;
+    istringstream  iss(input);
+    string         line;
+    int            lineNumber = 1;
 
     while (getline(iss, line)) {
         istringstream lineStream(line);
-        string token;
-        bool hasTokensInLine = false;
+        string        token;
+        bool          hasTokensInLine = false;
 
         while (lineStream >> token) {
-            tokens.emplace_back(Symbol(token, lineNumber));
+            if (isalpha(token.front())) {
+                string lowToken = token;
+                transform(lowToken.begin(), lowToken.end(), lowToken.begin(), [](const unsigned char c) { return tolower(c); });
+                if (Symbol::terminalSymbols.count(lowToken)) {
+                    tokens.emplace_back(lowToken, lineNumber);
+                } else {
+                    tokens.emplace_back("ID", lineNumber);
+                    tokens.back().valueData = Value(token);
+                }
+            } else if (isdigit(token.front())) {
+                bool isReal = false;
+                for (char c : token) {
+                    if (c == '.') {
+                        isReal = true;
+                        break;
+                    }
+                }
+                Symbol sym;
+                if (isReal) {
+                    sym = Symbol("REALNUM", lineNumber);
+                } else {
+                    sym = Symbol("INTNUM", lineNumber);
+                }
+                sym.valueData = Value(token);
+                tokens.emplace_back(sym);
+            } else {
+                tokens.emplace_back(token, lineNumber);
+            }
             hasTokensInLine = true;
         }
 
@@ -266,7 +401,7 @@ vector<Symbol> tokenize(const string &input) {
         }
     }
 
-    tokens.emplace_back(Symbol(SymbolType::ENDMARK, lineNumber - 1));
+    tokens.emplace_back(SymbolType::ENDMARK, lineNumber - 1);
     return tokens;
 }
 
@@ -275,17 +410,17 @@ class Grammar {
   protected:
     std::unordered_set<Symbol> computing;
 
-    Symbol startSymbol;
-    unordered_set<Symbol> terminals;
-    unordered_set<Symbol> nonTerminals;
+    Symbol                                       startSymbol;
+    unordered_set<Symbol>                        terminals;
+    unordered_set<Symbol>                        nonTerminals;
     unordered_map<Symbol, unordered_set<Symbol>> firstSets;
     unordered_map<Symbol, unordered_set<Symbol>> followSets;
-    vector<Production> productions;
+    vector<Production>                           productions;
 
   public:
     explicit Grammar(const string &grammar) {
         istringstream iss(grammar);
-        string line;
+        string        line;
         while (getline(iss, line)) {
             if (line.empty())
                 continue;
@@ -341,7 +476,7 @@ class Grammar {
                     break;
                 } else if (rightSymbol.isNonTerminal()) {
                     auto subFirstSet = computeFirstSet(rightSymbol);
-                    bool hasEpsilon = false;
+                    bool hasEpsilon  = false;
                     for (const auto &sym : subFirstSet) {
                         if (!sym.isEpsilon()) {
                             result.insert(sym);
@@ -369,7 +504,7 @@ class Grammar {
 
     unordered_set<Symbol>
     computeFirstSetForSequence(const vector<Symbol> &sequence,
-                               size_t index = 0) {
+                               const size_t          index = 0) {
         if (sequence.size() - index == 1) {
             return computeFirstSet(sequence.front());
         }
@@ -386,7 +521,7 @@ class Grammar {
                 break;
             }
             if (sym.isNonTerminal()) {
-                auto firstSet = computeFirstSet(sym);
+                auto firstSet   = computeFirstSet(sym);
                 bool hasEpsilon = false;
                 for (const auto &s : firstSet) {
                     if (s.isEpsilon()) {
@@ -414,7 +549,7 @@ class Grammar {
         }
     }
 
-    unordered_set<Symbol> computeFollowSet(const Symbol &symbol,
+    unordered_set<Symbol> computeFollowSet(const Symbol          &symbol,
                                            unordered_set<Symbol> &visited) {
         if (visited.count(symbol))
             return followSets[symbol];
@@ -438,7 +573,7 @@ class Grammar {
                             result.insert(*beta);
                         } else if (beta->isNonTerminal()) {
                             bool hasEpsilon = false;
-                            auto current = beta;
+                            auto current    = beta;
                             while (current != prod.right.end()) {
                                 auto &firstSet = firstSets[*current];
                                 for (const auto &sym : firstSet) {
@@ -512,7 +647,10 @@ class Grammar {
     }
 };
 
-enum ActionType { SHIFT, REDUCE, ACCEPT, ERROR };
+enum ActionType { SHIFT,
+                  REDUCE,
+                  ACCEPT,
+                  ERROR };
 
 class Action {
   public:
@@ -527,14 +665,14 @@ class Action {
 
     explicit Action(const ActionType t, const int num = -1) {
         if (t == SHIFT || t == ACCEPT) {
-            type = t;
+            type  = t;
             state = num;
         } else if (t == REDUCE) {
-            type = t;
+            type         = t;
             productionId = num;
         } else {
             type = ERROR;
-            err = num;
+            err  = num;
         }
     }
 
@@ -545,10 +683,10 @@ class Action {
 
     Action &operator=(const Action &other) {
         if (this != &other) {
-            type = other.type;
-            state = other.state;
+            type         = other.type;
+            state        = other.state;
             productionId = other.productionId;
-            err = other.err;
+            err          = other.err;
         }
         return *this;
     }
@@ -556,10 +694,16 @@ class Action {
 
 unordered_map<std::string, int> errorCodeMap = {
     {"}", 1},
-    {"+", 2}, {"-", 2}, {"*", 2}, {"/", 2},
+    {"+", 2},
+    {"-", 2},
+    {"*", 2},
+    {"/", 2},
     {"id", 3},
     {";", 4},
-    {")", 5}, {"]", 5},
+    {")", 5},
+    {"]", 5},
+    {"REALNUM", 6},
+    {"INTNUM", 7},
 };
 
 int getErrorCode(const Symbol &terminal) {
@@ -570,19 +714,18 @@ int getErrorCode(const Symbol &terminal) {
 class Item {
   public:
     Production production;
-    int dotPos;
+    int        dotPos;
 
     Item(const Production &prod, const int pos) : production(prod), dotPos(pos) {
         production.right.erase(
-            remove_if(production.right.begin(), production.right.end(),
-                      [](const Symbol &s) { return s.isEpsilon(); }),
+            remove_if(production.right.begin(), production.right.end(), [](const Symbol &s) { return s.isEpsilon(); }),
             production.right.end());
     }
 
     Item &operator=(const Item &other) {
         if (this != &other) {
             production = other.production;
-            dotPos = other.dotPos;
+            dotPos     = other.dotPos;
         }
         return *this;
     }
@@ -614,7 +757,8 @@ class Item {
     }
 };
 
-template <> struct std::hash<Item> {
+template <>
+struct std::hash<Item> {
     size_t operator()(const Item &item) const noexcept {
         return hash<Production>()(item.production) ^ hash<int>()(item.dotPos);
     }
@@ -623,7 +767,7 @@ template <> struct std::hash<Item> {
 class ItemSet {
   public:
     unordered_set<Item> items;
-    int state;
+    int                 state;
 
     explicit ItemSet(const int id = -1) : state(id) {}
 
@@ -640,18 +784,267 @@ class ItemSet {
     }
 };
 
+class SemanticAnalyzer {
+    unordered_map<string, double>    symbolTable_;
+    unordered_map<string, ValueType> typeTable_;
+    vector<string>                   declaredVars_;
+
+    stack<double> valueStack_;
+    stack<string> opStack_;
+    struct ConditionState {
+        bool conditionResult;
+        bool inThenBranch;
+        bool inElseBranch;
+        bool hasExecuted;
+
+        explicit ConditionState(const bool result) : conditionResult(result), inThenBranch(true),
+                                                     inElseBranch(false), hasExecuted(false) {
+        }
+    };
+
+    stack<ConditionState> conditionStack_;
+
+    vector<string> errors_;
+
+  public:
+    void executeSemanticAction(const Production &prod, const vector<Symbol> &tokens, const int lineNum) {
+        switch (prod.semType) {
+        case ProductionType::DECLARE:
+            handleDeclaration(tokens, lineNum);
+            break;
+        case ProductionType::INSTANT:
+            handleInstant(tokens);
+            break;
+        case ProductionType::IDVALUE:
+            handleIdentifier(tokens, lineNum);
+            break;
+        case ProductionType::ASSIGN:
+            handleAssignment(tokens, lineNum);
+            break;
+        case ProductionType::ARITHPRIME:
+            handleArithmetic(tokens, lineNum);
+            break;
+        case ProductionType::BOOL:
+            handleBooleanComparison();
+            break;
+        case ProductionType::BOOLOP:
+            handleBooleanOperator(tokens);
+            break;
+        default:
+            break;
+        }
+    }
+
+  private:
+    void handleDeclaration(const vector<Symbol> &tokens, const int lineNum) {
+        if (tokens.size() >= 4) {
+            string varType  = tokens[tokens.size() - 4].value;
+            string varName  = tokens[tokens.size() - 3].valueData.name;
+            double varValue = tokens[tokens.size() - 1].valueData.val;
+
+            if (symbolTable_.find(varName) != symbolTable_.end()) {
+                addError("error message:line " + to_string(lineNum) + ",variable '" + varName + "' already declared");
+                return;
+            }
+
+            symbolTable_[varName] = varValue;
+            typeTable_[varName]   = varType == "int" ? ValueType::INT : ValueType::REAL;
+            declaredVars_.push_back(varName);
+        }
+    }
+
+    void handleInstant(const vector<Symbol> &tokens) {
+        if (!tokens.empty()) {
+            valueStack_.push(tokens.back().valueData.val);
+        }
+    }
+
+    void handleIdentifier(const vector<Symbol> &tokens, const int lineNum) {
+        if (!tokens.empty()) {
+            string varName = tokens.back().valueData.name;
+
+            if (symbolTable_.find(varName) == symbolTable_.end()) {
+                addError("error message:line " + to_string(lineNum) + ",undeclared variable '" + varName + "'");
+                valueStack_.push(0.0);
+            } else {
+                valueStack_.push(symbolTable_[varName]);
+            }
+        }
+    }
+
+    void handleAssignment(const vector<Symbol> &tokens, const int lineNum) {
+        if (!tokens.empty() && tokens.size() >= 2 && !valueStack_.empty()) {
+            string varName;
+            for (auto it = tokens.rbegin(); it != tokens.rend(); ++it) {
+                if (it->isTerminal() && it->value == "=") {
+                    if (it + 1 != tokens.rend() && (it + 1)->isTerminal() && (it + 1)->value == "ID") {
+                        varName = (it + 1)->valueData.name;
+                    }
+                    break;
+                }
+            }
+            if (varName.empty()) {
+                cerr << "Error: Assignment without variable name at line " << lineNum << endl;
+            }
+            double value = valueStack_.top();
+            valueStack_.pop();
+            if (symbolTable_.find(varName) == symbolTable_.end()) {
+                errors_.push_back("Line " + to_string(lineNum) + ": Assignment to undeclared variable '" + varName + "'");
+            } else {
+                if (shouldExecute()) {
+                    symbolTable_[varName] = value;
+                }
+            }
+        }
+    }
+
+    bool shouldExecute() {
+        while (!conditionStack_.empty() && conditionStack_.top().hasExecuted) {
+            conditionStack_.pop();
+        }
+        if (conditionStack_.empty()) {
+            return true;
+        }
+        auto &condition = conditionStack_.top();
+
+        if (condition.inThenBranch) {
+            condition.inThenBranch = false;
+            condition.inElseBranch = true;
+            return condition.conditionResult;
+        } else if (condition.inElseBranch) {
+            condition.inElseBranch = false;
+            condition.hasExecuted  = true;
+            return !condition.conditionResult;
+        }
+
+        return true;
+    }
+
+    void handleArithmetic(const vector<Symbol> &tokens, const int lineNum) {
+        if (valueStack_.size() >= 2) {
+            double right = valueStack_.top();
+            valueStack_.pop();
+            double left = valueStack_.top();
+            valueStack_.pop();
+            char op = 0;
+            for (auto it = tokens.rbegin(); it != tokens.rend(); ++it) {
+                if (it->isTerminal() && (it->value == "+" || it->value == "-" || it->value == "*" || it->value == "/")) {
+                    op = it->value[0];
+                    break;
+                }
+            }
+            if (op == 0) {
+                errors_.push_back("Line " + to_string(lineNum) + ": Missing operator in arithmetic expression");
+                return;
+            }
+
+            double result = 0.0;
+            switch (op) {
+            case '+':
+                result = left + right;
+                break;
+            case '-':
+                result = left - right;
+                break;
+            case '*':
+                result = left * right;
+                break;
+            case '/':
+                if (right == 0.0) {
+                    addError("error message:line " + to_string(lineNum) + ",division by zero");
+                    result = 0.0;
+                } else {
+                    result = left / right;
+                }
+                break;
+            default:
+                errors_.push_back("Line " + to_string(lineNum) + ": Unknown operator '" + op + "'");
+                break;
+            }
+            valueStack_.push(result);
+        }
+    }
+
+    void handleBooleanComparison() {
+        if (valueStack_.size() >= 2 && !opStack_.empty()) {
+            double right = valueStack_.top();
+            valueStack_.pop();
+            double left = valueStack_.top();
+            valueStack_.pop();
+            string op = opStack_.top();
+            opStack_.pop();
+
+            bool result = false;
+            if (op == "<")
+                result = left < right;
+            else if (op == "<=")
+                result = left <= right;
+            else if (op == ">")
+                result = left > right;
+            else if (op == ">=")
+                result = left >= right;
+            else if (op == "==")
+                result = left == right;
+            else if (op == "!=")
+                result = left != right;
+
+            conditionStack_.emplace(result);
+        }
+    }
+
+    void handleBooleanOperator(const vector<Symbol> &tokens) {
+        if (!tokens.empty()) {
+            opStack_.push(tokens.back().value);
+        }
+    }
+
+  public:
+    void outputResults() {
+        if (errors_.empty()) {
+            for (const string &var : declaredVars_) {
+                cout << var << ": " << symbolTable_[var] << "\n"[var == declaredVars_.back()];
+            }
+        } else {
+            for (const string &error : errors_) {
+                cout << error << endl;
+            }
+        }
+    }
+
+    void addError(const string &error) {
+        errors_.push_back(error);
+    }
+
+    const vector<string> &getErrors() const { return errors_; }
+
+    void reset() {
+        symbolTable_.clear();
+        typeTable_.clear();
+        declaredVars_.clear();
+        while (!valueStack_.empty())
+            valueStack_.pop();
+        while (!opStack_.empty())
+            opStack_.pop();
+        while (!conditionStack_.empty())
+            conditionStack_.pop();
+        errors_.clear();
+    }
+};
+
 class SLRGrammar : public Grammar {
 
-    Symbol extend_production;
-    vector<ItemSet> itemSets;
+    Symbol                                         extend_production;
+    vector<ItemSet>                                itemSets;
     unordered_map<int, unordered_map<Symbol, int>> transitions;
 
     unordered_map<int, unordered_map<Symbol, Action>> actionTable;
-    unordered_map<int, unordered_map<Symbol, int>> gotoTable;
+    unordered_map<int, unordered_map<Symbol, int>>    gotoTable;
+
+    SemanticAnalyzer semanticAnalyzer;
 
     ItemSet closure(const ItemSet &itemSet) const {
         ItemSet closureSet = itemSet;
-        bool changed;
+        bool    changed;
         do {
             changed = false;
             for (const auto &item : closureSet.items) {
@@ -701,7 +1094,7 @@ class SLRGrammar : public Grammar {
         itemSets.push_back(initialSet);
 
         unordered_set<pair<int, Symbol>> processedTransitions;
-        bool changed;
+        bool                             changed;
         do {
             changed = false;
             for (int i = 0; i < itemSets.size(); ++i) {
@@ -731,7 +1124,7 @@ class SLRGrammar : public Grammar {
                         nextSet.state = static_cast<int>(itemSets.size());
                         itemSets.push_back(nextSet);
                         transitions[i][symbol] = nextSet.state;
-                        changed = true;
+                        changed                = true;
                     } else {
                         transitions[i][symbol] = it - itemSets.begin();
                     }
@@ -748,8 +1141,8 @@ class SLRGrammar : public Grammar {
             const ItemSet &state = itemSets[i];
             for (const auto &item : state.items) {
                 if (!item.isComplete()) {
-                    Symbol nextSymbol = item.nextSymbol();
-                    auto transitionIt = transitions.find(i);
+                    Symbol nextSymbol   = item.nextSymbol();
+                    auto   transitionIt = transitions.find(i);
                     if (transitionIt != transitions.end()) {
                         auto symbolTransition = transitionIt->second.find(nextSymbol);
                         if (symbolTransition != transitionIt->second.end()) {
@@ -784,7 +1177,7 @@ class SLRGrammar : public Grammar {
             }
         }
 
-        for (int i = 0 ; i < itemSets.size(); i++) {
+        for (int i = 0; i < itemSets.size(); i++) {
             for (auto &terminal : terminals) {
                 if (actionTable[i].find(terminal) == actionTable[i].end()) {
                     actionTable[i][terminal] = Action(ERROR, getErrorCode(terminal));
@@ -801,16 +1194,16 @@ class SLRGrammar : public Grammar {
     }
 
     void parse(const string &input) {
-        auto tokens = tokenize(input);
-        stack<int> stateStack;
+        auto          tokens = tokenize(input);
+        stack<int>    stateStack;
         stack<Symbol> symbolStack;
 
         stateStack.push(0);
-        int tokenIndex = 0;
+        int                tokenIndex = 0;
         vector<Production> steps;
 
         while (tokenIndex < tokens.size()) {
-            int currentState = stateStack.top();
+            int    currentState = stateStack.top();
             Symbol currentToken = tokens[tokenIndex];
 
             auto it = actionTable[currentState].find(currentToken);
@@ -824,14 +1217,29 @@ class SLRGrammar : public Grammar {
 
             switch (action.type) {
             case SHIFT: {
+#if DEBUG
+                cout << "Shift: State " << currentState
+                     << ", Token: " << currentToken.value
+                     << ", Next State: " << action.state << endl;
+#endif
                 stateStack.push(action.state);
                 symbolStack.push(currentToken);
                 ++tokenIndex;
                 break;
-            }case REDUCE: {
+            }
+            case REDUCE: {
+#if DEBUG
+                cout << "Reduce: State " << currentState
+                     << ", Production: " << productions[action.productionId - 1].toString()
+                     << ", Next State: " << stateStack.top() << endl;
+#endif
                 const Production &prod = productions[action.productionId - 1];
                 steps.emplace_back(prod);
-                for (int i = 0; i < prod.right.size() && !prod.right[i].isEpsilon() ; ++i) {
+
+                auto truncatedTokens = vector<Symbol>(tokens.begin(), tokens.begin() + tokenIndex);
+                semanticAnalyzer.executeSemanticAction(prod, truncatedTokens, tokens[tokenIndex].line);
+
+                for (int i = 0; i < prod.right.size() && !prod.right[i].isEpsilon(); ++i) {
                     if (!stateStack.empty())
                         stateStack.pop();
                     if (!symbolStack.empty())
@@ -851,56 +1259,53 @@ class SLRGrammar : public Grammar {
                     stateStack.push(gotoState);
                 }
                 break;
-            }case ACCEPT: {
-                vector<Symbol> symbols = {startSymbol};
-                for (auto rit = steps.rbegin(); rit != steps.rend(); ++rit) {
-                    for (auto& sym : symbols) {
-                        cout << sym << " ";
-                    }
-                    cout << "=> " << endl;
-                    for (auto prit = symbols.rbegin(); prit != symbols.rend(); ++prit) {
-                        if (rit->left == *prit) {
-                            auto baseIt = prit.base();
-                            symbols.erase(baseIt - 1);
-                            if (!rit->right.empty() && !(rit->right.size() == 1 && rit->right[0].isEpsilon())) {
-                                symbols.insert(baseIt - 1, rit->right.begin(), rit->right.end());
-                            }
-                            break;
-                        }
-                    }
-                }
-
-                for (int x = 0 ; x < tokens.size() - 1 ; ++x) {
-                    cout << tokens[x] << " "[x == tokens.size() - 1];
-                }
+            }
+            case ACCEPT: {
+                semanticAnalyzer.outputResults();
                 return;
-            }case ERROR: {
+            }
+            case ERROR: {
                 switch (action.err) {
-                    case 1: {
-                        cout << "语法错误，第" << tokens[tokenIndex].line - 1 << "行，缺少\";\"" << endl;
-                        tokens.insert(tokens.begin() + tokenIndex, {Symbol(";", tokens[tokenIndex].line - 1)});
-                        break;
-                    }
-                    case 2: {
-                        cout << "语法错误，第" << tokens[tokenIndex].line << "行，缺少\"ID\""<< endl;
-                        tokens.insert(tokens.begin() + tokenIndex, {Symbol("ID", tokens[tokenIndex].line)});
-                    }
-                    case 3: {
-                        cout << "语法错误，第" << tokens[tokenIndex].line << "行，缺少运算符" << endl;
-                        tokens.insert(tokens.begin() + tokenIndex, {Symbol("+", tokens[tokenIndex].line)});
-                    }
-                    case 4: {
-                        cout << "语法错误，第" << tokens[tokenIndex].line << "行，意外的\";\"" << endl;
-                        tokens.erase(tokens.begin() + tokenIndex);
-                    }
-                    case 5: {
-                        cout << "语法错误，第" << tokens[tokenIndex].line << "行，不匹配的\"" << tokens[tokenIndex] << "\"" << endl;
-                        tokens.erase(tokens.begin() + tokenIndex);
-                    }
-                    case 0:
-                    default: {
-                        cerr << "Error: Unrecognized token type " << action.err << endl;
-                    }
+                case 1: {
+                    cout << "语法错误，第" << tokens[tokenIndex].line - 1 << "行，缺少\";\"" << endl;
+                    tokens.insert(tokens.begin() + tokenIndex, {Symbol(";", tokens[tokenIndex].line - 1)});
+                    break;
+                }
+                case 2: {
+                    cout << "语法错误，第" << tokens[tokenIndex].line << "行，缺少\"ID\"" << endl;
+                    tokens.insert(tokens.begin() + tokenIndex, {Symbol("ID", tokens[tokenIndex].line)});
+                    break;
+                }
+                case 3: {
+                    cout << "语法错误，第" << tokens[tokenIndex].line << "行，缺少运算符" << endl;
+                    tokens.insert(tokens.begin() + tokenIndex, {Symbol("+", tokens[tokenIndex].line)});
+                    break;
+                }
+                case 4: {
+                    cout << "语法错误，第" << tokens[tokenIndex].line << "行，意外的\";\"" << endl;
+                    tokens.erase(tokens.begin() + tokenIndex);
+                    break;
+                }
+                case 5: {
+                    cout << "语法错误，第" << tokens[tokenIndex].line << "行，不匹配的\"" << tokens[tokenIndex] << "\"" << endl;
+                    tokens.erase(tokens.begin() + tokenIndex);
+                    break;
+                }
+                case 6: {
+                    semanticAnalyzer.addError("error message:line " + to_string(tokens[tokenIndex].line) + ",realnum can not be translated into int type");
+                    tokens[tokenIndex].value = "INTNUM";
+                    break;
+                }
+                case 7: {
+                    semanticAnalyzer.addError("error message:line " + to_string(tokens[tokenIndex].line) + ",intnum can not be translated into real type");
+                    tokens[tokenIndex].value = "REALNUM";
+                    break;
+                }
+                case 0:
+                default: {
+                    cerr << "Error: Unrecognized token type " << action.err << endl;
+                    return;
+                }
                 }
                 break;
             }
@@ -971,8 +1376,8 @@ class SLRGrammar : public Grammar {
             int state = pair.first;
             os << "State " << state << ": ";
             for (const auto &gotoPair : pair.second) {
-                const Symbol &symbol = gotoPair.first;
-                int nextState = gotoPair.second;
+                const Symbol &symbol    = gotoPair.first;
+                int           nextState = gotoPair.second;
                 os << symbol.value << " -> " << nextState << ", ";
             }
             os << endl;
@@ -983,21 +1388,24 @@ class SLRGrammar : public Grammar {
 };
 
 string exp_grammar = R"(
-program -> compoundstmt
-stmt ->  ifstmt  |  whilestmt  |  assgstmt  |  compoundstmt
-compoundstmt ->  { stmts }
-stmts ->  stmt stmts   |   E
-ifstmt ->  if ( boolexpr ) then stmt else stmt
-whilestmt ->  while ( boolexpr ) stmt
-assgstmt ->  ID = arithexpr ;
-boolexpr  ->  arithexpr boolop arithexpr
-boolop ->   <  |  >  |  <=  |  >=  | ==
-arithexpr  ->  multexpr arithexprprime
-arithexprprime ->  + multexpr arithexprprime  |  - multexpr arithexprprime  |   E
-multexpr ->  simpleexpr  multexprprime
-multexprprime ->  * simpleexpr multexprprime  |  / simpleexpr multexprprime  |   E
-simpleexpr ->  ID  |  NUM  |  ( arithexpr )
+program -> decls compoundstmt
+decls -> decl ; decls | E
+decl -> int ID = INTNUM | real ID = REALNUM
+stmt -> ifstmt | assgstmt | compoundstmt
+compoundstmt -> { stmts }
+stmts -> stmt stmts | E
+ifstmt -> if ( boolexpr ) then stmt else stmt
+assgstmt -> ID = arithexpr ;
+boolexpr -> arithexpr boolop arithexpr
+boolop -> < | > | <= | >= | ==
+arithexpr -> multexpr arithexprprime
+arithexprprime -> + multexpr arithexprprime | - multexpr arithexprprime | E
+multexpr -> simpleexpr multexprprime
+multexprprime -> * simpleexpr multexprprime | / simpleexpr multexprprime | E
+simpleexpr -> ID | INTNUM | REALNUM | ( arithexpr )
 )";
+
+/* 你可以添加其他函数 */
 
 void Analysis() {
     string prog;
@@ -1005,6 +1413,11 @@ void Analysis() {
     /* 骚年们 请开始你们的表演 */
     /********* Begin *********/
     SLRGrammar grammar(exp_grammar);
+
+#if DEBUG
+    cout << grammar << endl;
+#endif
+
     grammar.parse(prog);
 
     /********* End *********/
