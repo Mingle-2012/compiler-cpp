@@ -712,11 +712,13 @@ int getErrorCode(const Symbol &terminal) {
 }
 
 class Item {
-  public:
+public:
     Production production;
     int        dotPos;
 
-    Item(const Production &prod, const int pos) : production(prod), dotPos(pos) {
+    Symbol lookahead;
+
+    Item(const Production &prod, const int pos, const Symbol &la = Symbol()) : production(prod), dotPos(pos), lookahead(la) {
         production.right.erase(
             remove_if(production.right.begin(), production.right.end(), [](const Symbol &s) { return s.isEpsilon(); }),
             production.right.end());
@@ -726,6 +728,7 @@ class Item {
         if (this != &other) {
             production = other.production;
             dotPos     = other.dotPos;
+            lookahead  = other.lookahead;
         }
         return *this;
     }
@@ -733,7 +736,8 @@ class Item {
     bool operator==(const Item &other) const {
         return production.left == other.production.left &&
                production.right == other.production.right &&
-               dotPos == other.dotPos;
+               dotPos == other.dotPos &&
+               lookahead == other.lookahead;
     }
 
     bool operator!=(const Item &other) const { return !(*this == other); }
@@ -753,7 +757,7 @@ class Item {
         if (isComplete()) {
             throw runtime_error("Cannot advance a complete item.");
         }
-        return {production, dotPos + 1};
+        return {production, dotPos + 1, lookahead};
     }
 };
 
@@ -1032,7 +1036,7 @@ class SemanticAnalyzer {
 };
 
 class SLRGrammar : public Grammar {
-
+protected:
     Symbol                                         extend_production;
     vector<ItemSet>                                itemSets;
     unordered_map<int, unordered_map<Symbol, int>> transitions;
@@ -1387,6 +1391,96 @@ class SLRGrammar : public Grammar {
     }
 };
 
+class LRGrammar : public SLRGrammar {
+  protected:
+    ItemSet closure(const ItemSet &itemSet) {
+        ItemSet closureSet = itemSet;
+        bool    changed;
+        do {
+            changed = false;
+
+            for (const auto &item : closureSet.items) {
+                if (item.isComplete())
+                    continue;
+
+                Symbol nextSym = item.nextSymbol();
+                if (!nextSym.isNonTerminal())
+                    continue;
+
+                vector<Symbol> beta;
+                for (int i = item.dotPos + 1; i < item.production.right.size(); ++i) {
+                    beta.push_back(item.production.right[i]);
+                }
+                beta.push_back(item.lookahead);
+
+                auto firstSet = computeFirstSetForSequence(beta);
+                for (const Production &prod : productions) {
+                    if (prod.left == nextSym) {
+                        for (const Symbol &firstSym : firstSet) {
+                            Item newItem(prod, 0, firstSym);
+                            if (closureSet.items.find(newItem) == closureSet.items.end()) {
+                                closureSet.add(newItem);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        } while (changed);
+        return closureSet;
+    }
+
+    void computeTables() {
+        actionTable.clear();
+        gotoTable.clear();
+
+        for (int i = 0; i < itemSets.size(); i++) {
+            const ItemSet &state = itemSets[i];
+            for (const auto &item : state.items) {
+                if (!item.isComplete()) {
+                    Symbol nextSymbol   = item.nextSymbol();
+                    auto   transitionIt = transitions.find(i);
+                    if (transitionIt != transitions.end()) {
+                        auto symbolTransition = transitionIt->second.find(nextSymbol);
+                        if (symbolTransition != transitionIt->second.end()) {
+                            if (nextSymbol.isTerminal()) {
+                                Action newAction(SHIFT, symbolTransition->second);
+                                actionTable[i][nextSymbol] = newAction;
+                            } else if (nextSymbol.isNonTerminal()) {
+                                gotoTable[i][nextSymbol] = symbolTransition->second;
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (const auto &item : state.items) {
+                if (item.isComplete()) {
+                    if (item.production.left == extend_production) {
+                        Symbol endmark(SymbolType::ENDMARK);
+                        actionTable[i][endmark] = Action(ACCEPT);
+                    } else {
+                        if (item.lookahead.isTerminal() || item.lookahead.isEndMark()) {
+                            actionTable[i][item.lookahead] = Action(REDUCE, item.production.id);
+                        }
+                    }
+                }
+            }
+        }
+
+        for (int i = 0; i < itemSets.size(); i++) {
+            for (auto &terminal : terminals) {
+                if (actionTable[i].find(terminal) == actionTable[i].end()) {
+                    actionTable[i][terminal] = Action(ERROR, getErrorCode(terminal));
+                }
+            }
+        }
+    }
+
+  public:
+    explicit LRGrammar(const string &grammar) : SLRGrammar(grammar) {}
+};
+
 string exp_grammar = R"(
 program -> decls compoundstmt
 decls -> decl ; decls | E
@@ -1412,7 +1506,7 @@ void Analysis() {
     read_prog(prog);
     /* 骚年们 请开始你们的表演 */
     /********* Begin *********/
-    SLRGrammar grammar(exp_grammar);
+    LRGrammar grammar(exp_grammar);
 
 #if DEBUG
     cout << grammar << endl;
