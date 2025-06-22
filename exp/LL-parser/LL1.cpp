@@ -250,19 +250,24 @@ void printParseTree(const shared_ptr<ParseTreeNode> &node, int depth = 0) {
 }
 
 class Grammar {
-  public:
+
+  protected:
+    std::unordered_set<Symbol> computing;
+
     Symbol startSymbol;
     unordered_set<Symbol> terminals;
     unordered_set<Symbol> nonTerminals;
     unordered_map<Symbol, unordered_set<Symbol>> firstSets;
     unordered_map<Symbol, unordered_set<Symbol>> followSets;
-
     vector<Production> productions;
 
+  public:
     explicit Grammar(const string &grammar) {
         istringstream iss(grammar);
         string line;
         while (getline(iss, line)) {
+            if (line.empty())
+                continue;
             auto prods = parseProductions(line);
             productions.insert(productions.end(), prods.begin(), prods.end());
         }
@@ -296,6 +301,11 @@ class Grammar {
         if (firstSets.count(symbol) && !firstSets[symbol].empty()) {
             return firstSets[symbol];
         }
+
+        if (computing.count(symbol)) {
+            return {};
+        }
+        computing.insert(symbol);
 
         unordered_set<Symbol> result;
         for (const auto &prod : productions) {
@@ -331,6 +341,7 @@ class Grammar {
             }
         }
 
+        computing.erase(symbol);
         firstSets[symbol].insert(result.begin(), result.end());
         return result;
     }
@@ -419,7 +430,7 @@ class Grammar {
                                 if (!hasEpsilon) {
                                     break;
                                 }
-                                current++;
+                                ++current;
                             }
 
                             if (hasEpsilon && prod.left.value != symbol.value) {
@@ -481,9 +492,10 @@ class Grammar {
 };
 
 class LL1Grammar : public Grammar {
-  public:
+  protected:
     unordered_map<Symbol, unordered_map<Symbol, Production>> parseTable;
 
+  public:
     explicit LL1Grammar(const string &grammar) : Grammar(grammar) {
         computeParseTable();
     }
