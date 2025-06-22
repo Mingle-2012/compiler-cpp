@@ -21,7 +21,7 @@ void read_prog(string& prog)
 unordered_map<string, int> element_table;
 
 void load_element_table() {
-    ifstream file("D:\\Data\\University\\compiler-cpp\\exp\\1\\c_keys.txt", ios::in);
+    ifstream file("/Users/wuzekai/repo/compiler-cpp/exp/lexical-analysis/c_keys.txt", ios::in);
     if (!file.is_open()) {
         cerr << "Error opening file for reading." << endl;
         return;

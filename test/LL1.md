@@ -1,0 +1,277 @@
+1.
+Input
+```
+{
+    if ( ID > NUM ) then ID = NUM ; else ID = NUM ;
+}
+```
+
+Output
+```
+program
+	compoundstmt
+		{
+		stmts
+			stmt
+				ifstmt
+					if
+					(
+					boolexpr
+						arithexpr
+							multexpr
+								simpleexpr
+									ID
+								multexprprime
+									E
+							arithexprprime
+								E
+						boolop
+							>
+						arithexpr
+							multexpr
+								simpleexpr
+									NUM
+								multexprprime
+									E
+							arithexprprime
+								E
+					)
+					then
+					stmt
+						assgstmt
+							ID
+							=
+							arithexpr
+								multexpr
+									simpleexpr
+										NUM
+									multexprprime
+										E
+								arithexprprime
+									E
+							;
+					else
+					stmt
+						assgstmt
+							ID
+							=
+							arithexpr
+								multexpr
+									simpleexpr
+										NUM
+									multexprprime
+										E
+								arithexprprime
+									E
+							;
+			stmts
+				E
+		}
+```
+
+2.
+Input
+```
+{
+    while ( ID <= NUM ) ID = ID + NUM ;
+}
+```
+
+Output
+```
+program
+	compoundstmt
+		{
+		stmts
+			stmt
+				whilestmt
+					while
+					(
+					boolexpr
+						arithexpr
+							multexpr
+								simpleexpr
+									ID
+								multexprprime
+									E
+							arithexprprime
+								E
+						boolop
+							<=
+						arithexpr
+							multexpr
+								simpleexpr
+									NUM
+								multexprprime
+									E
+							arithexprprime
+								E
+					)
+					stmt
+						assgstmt
+							ID
+							=
+							arithexpr
+								multexpr
+									simpleexpr
+										ID
+									multexprprime
+										E
+								arithexprprime
+									+
+									multexpr
+										simpleexpr
+											NUM
+										multexprprime
+											E
+									arithexprprime
+										E
+							;
+			stmts
+				E
+		}
+```
+
+3.
+Input
+```
+{
+    if ( ID == NUM ) then {
+        ID = NUM ;
+        while ( ID < NUM ) {
+            ID = ID + NUM ;
+        }
+    } else {
+        ID = NUM ;
+    }
+}
+```
+
+Output
+```
+program
+	compoundstmt
+		{
+		stmts
+			stmt
+				ifstmt
+					if
+					(
+					boolexpr
+						arithexpr
+							multexpr
+								simpleexpr
+									ID
+								multexprprime
+									E
+							arithexprprime
+								E
+						boolop
+							==
+						arithexpr
+							multexpr
+								simpleexpr
+									NUM
+								multexprprime
+									E
+							arithexprprime
+								E
+					)
+					then
+					stmt
+						compoundstmt
+							{
+							stmts
+								stmt
+									assgstmt
+										ID
+										=
+										arithexpr
+											multexpr
+												simpleexpr
+													NUM
+												multexprprime
+													E
+											arithexprprime
+												E
+										;
+								stmts
+									stmt
+										whilestmt
+											while
+											(
+											boolexpr
+												arithexpr
+													multexpr
+														simpleexpr
+															ID
+														multexprprime
+															E
+													arithexprprime
+														E
+												boolop
+													<
+												arithexpr
+													multexpr
+														simpleexpr
+															NUM
+														multexprprime
+															E
+													arithexprprime
+														E
+											)
+											stmt
+												compoundstmt
+													{
+													stmts
+														stmt
+															assgstmt
+																ID
+																=
+																arithexpr
+																	multexpr
+																		simpleexpr
+																			ID
+																		multexprprime
+																			E
+																	arithexprprime
+																		+
+																		multexpr
+																			simpleexpr
+																				NUM
+																			multexprprime
+																				E
+																		arithexprprime
+																			E
+																;
+														stmts
+															E
+													}
+									stmts
+										E
+							}
+					else
+					stmt
+						compoundstmt
+							{
+							stmts
+								stmt
+									assgstmt
+										ID
+										=
+										arithexpr
+											multexpr
+												simpleexpr
+													NUM
+												multexprprime
+													E
+											arithexprprime
+												E
+										;
+								stmts
+									E
+							}
+			stmts
+				E
+		}
+```
